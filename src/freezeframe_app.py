@@ -15,7 +15,7 @@ VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mkv", ".avi"}
 class FirstFrameApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Folder Processor")
+        self.root.title("FreezeFrame")
         self.root.geometry("1120x760")
         self.root.minsize(1040, 700)
 
@@ -67,7 +67,7 @@ class FirstFrameApp:
         outer.pack(fill="both", expand=True)
         top_card = ttk.Frame(outer, padding=(22, 18))
         top_card.pack(fill="x")
-        ttk.Label(top_card, text="Folder Processor", style="SectionTitle.TLabel").pack(anchor="w")
+        ttk.Label(top_card, text="FreezeFrame", style="SectionTitle.TLabel").pack(anchor="w")
 
         self._folder_card(outer, "Input Folder", "Select the folder containing the input files.", self.input_var, self.choose_input_folder, "Open...")
         self._folder_card(outer, "Output Folder", "Select where output JPEG files will be saved.", self.output_var, self.choose_output_folder, "Open...")

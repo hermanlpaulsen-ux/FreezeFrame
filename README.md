@@ -1,11 +1,10 @@
-# Folder Processor
+# FreezeFrame
 
 Desktop app for extracting the first frame from video files and saving them as JPEG images.
 
 ## Download App (macOS)
 
-- Release page: https://github.com/hermanlpaulsen-ux/folder-processor/releases/tag/v1.0.0
-- Direct download (`.zip`): https://github.com/hermanlpaulsen-ux/folder-processor/releases/download/v1.0.0/Folder-Processor-Lite-macOS.zip
+- Releases: https://github.com/hermanlpaulsen-ux/FreezeFrame/releases
 
 ## Features
 
@@ -33,7 +32,7 @@ python3 -m pip install -r requirements.txt
 ## Run locally
 
 ```bash
-python3 src/folder_processor_app.py
+python3 src/freezeframe_app.py
 ```
 
 ## Build macOS app
@@ -44,7 +43,7 @@ python3 src/folder_processor_app.py
 
 Build output:
 
-- `dist/Folder Processor.app`
+- `dist/FreezeFrame.app`
 
 The build script tries to bundle ffmpeg from:
 

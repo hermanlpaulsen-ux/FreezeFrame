@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="Folder Processor"
-ENTRYPOINT="${ROOT_DIR}/src/folder_processor_app.py"
+APP_NAME="FreezeFrame"
+ENTRYPOINT="${ROOT_DIR}/src/freezeframe_app.py"
 
 if [[ ! -f "${ENTRYPOINT}" ]]; then
   echo "Missing entrypoint: ${ENTRYPOINT}"
