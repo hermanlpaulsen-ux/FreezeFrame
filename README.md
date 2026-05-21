@@ -2,6 +2,11 @@
 
 Desktop app for extracting the first frame from video files and saving them as JPEG images.
 
+## Download App (macOS)
+
+- Release page: https://github.com/hermanlpaulsen-ux/folder-processor/releases/tag/v1.0.0
+- Direct download (`.zip`): https://github.com/hermanlpaulsen-ux/folder-processor/releases/download/v1.0.0/Folder-Processor-Lite-macOS.zip
+
 ## Features
 
 - Native macOS app window (no Terminal window required)
