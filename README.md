@@ -53,3 +53,5 @@ If no local ffmpeg is found, the app still builds and will use system PATH resol
 
 - Do not commit `build/`, `dist/`, or `.app` bundles to source control.
 - Use GitHub Releases for distributing built `.app` artifacts.
+
+Made with ChatGPT Codex.
