@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_NAME="Folder Processor"
+ENTRYPOINT="${ROOT_DIR}/src/folder_processor_app.py"
+
+if [[ ! -f "${ENTRYPOINT}" ]]; then
+  echo "Missing entrypoint: ${ENTRYPOINT}"
+  exit 1
+fi
+
+FFMPEG_CANDIDATES=(
+  "/opt/homebrew/bin/ffmpeg"
+  "/usr/local/bin/ffmpeg"
+  "$(command -v ffmpeg 2>/dev/null || true)"
+)
+
+FFMPEG_BIN=""
+for candidate in "${FFMPEG_CANDIDATES[@]}"; do
+  if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+    FFMPEG_BIN="${candidate}"
+    break
+  fi
+done
+
+PYI_ARGS=(
+  --windowed
+  --noconfirm
+  --name "${APP_NAME}"
+  --exclude-module unittest
+  --exclude-module test
+  --exclude-module tests
+  --exclude-module pydoc
+  --exclude-module doctest
+  --exclude-module distutils
+  --exclude-module setuptools
+  --exclude-module pip
+  --exclude-module wheel
+  --exclude-module tkinter.test
+  --exclude-module asyncio
+  --exclude-module concurrent
+  --exclude-module multiprocessing
+  --exclude-module xmlrpc
+  --exclude-module http
+  --exclude-module email
+  --exclude-module zoneinfo
+  --exclude-module sqlite3
+  --exclude-module ssl
+)
+
+if [[ -n "${FFMPEG_BIN}" ]]; then
+  echo "Bundling ffmpeg from: ${FFMPEG_BIN}"
+  PYI_ARGS+=(--add-binary "${FFMPEG_BIN}:ffmpeg")
+else
+  echo "No local ffmpeg found; building without bundled ffmpeg."
+fi
+
+cd "${ROOT_DIR}"
+python3 -m PyInstaller "${PYI_ARGS[@]}" "${ENTRYPOINT}"
+
+echo
+echo "Build complete:"
+echo "${ROOT_DIR}/dist/${APP_NAME}.app"
