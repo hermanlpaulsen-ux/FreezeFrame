@@ -2,6 +2,10 @@
 
 Desktop app for extracting the first frame from video files and saving them as JPEG images.
 
+## Roadmap
+
+- Development plan: [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md)
+
 ## Download App (macOS)
 
 - Releases: https://github.com/hermanlpaulsen-ux/FreezeFrame/releases
