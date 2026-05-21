@@ -12,3 +12,6 @@ dist/
 
 # macOS junk
 .DS_Store
+
+# Release artifacts
+*-macOS.zip
