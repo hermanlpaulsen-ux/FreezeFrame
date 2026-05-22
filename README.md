@@ -20,6 +20,10 @@ Desktop app for extracting the first frame from video files and saving them as i
   - `.../Stills/JPEG`
   - `.../Stills/PNG`
   - `.../Stills/TIFF`
+- Quality presets (resolution unchanged):
+  - `High`: lowest compression artifacts, larger files
+  - `Balanced`: default quality/size tradeoff
+  - `Small`: stronger compression, smaller files
 - Progress bar and per-run status
 - `Start` becomes `Restart` after completion
 - `Open output folder` appears after a successful run

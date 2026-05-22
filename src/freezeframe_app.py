@@ -28,6 +28,7 @@ class FirstFrameApp:
         self.jpeg_enabled_var = tk.BooleanVar(value=True)
         self.png_enabled_var = tk.BooleanVar(value=False)
         self.tiff_enabled_var = tk.BooleanVar(value=False)
+        self.quality_preset_var = tk.StringVar(value="Balanced")
 
         self.output_manually_set = False
         self.last_output_dir = ""
@@ -120,6 +121,18 @@ class FirstFrameApp:
         ttk.Checkbutton(row, text="JPEG", variable=self.jpeg_enabled_var).pack(side="left", padx=(0, 14))
         ttk.Checkbutton(row, text="PNG", variable=self.png_enabled_var).pack(side="left", padx=(0, 14))
         ttk.Checkbutton(row, text="TIFF", variable=self.tiff_enabled_var).pack(side="left")
+        quality_row = ttk.Frame(card)
+        quality_row.pack(fill="x", pady=(12, 0))
+        ttk.Label(quality_row, text="Quality Preset:", style="Body.TLabel").pack(side="left")
+        preset_box = ttk.Combobox(
+            quality_row,
+            textvariable=self.quality_preset_var,
+            state="readonly",
+            values=("High", "Balanced", "Small"),
+            width=12,
+        )
+        preset_box.pack(side="left", padx=(10, 0))
+        preset_box.current(1)
 
     def _show_open_output_button(self, show: bool) -> None:
         if show:
@@ -237,7 +250,7 @@ class FirstFrameApp:
                 if self.stop_requested:
                     break
                 target = output_dir / folder_name / f"{file.stem}.{ext}"
-                cmd = self._build_export_command(file, target, ext)
+                cmd = self._build_export_command(file, target, ext, self.quality_preset_var.get())
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 with self.process_lock:
                     self.active_processes.append(proc)
@@ -254,7 +267,7 @@ class FirstFrameApp:
                 self.root.after(0, self._update_progress, completed, total, pct)
         self.root.after(0, self._finish, total, completed, output_dir, failed, self.stop_requested)
 
-    def _build_export_command(self, source: Path, target: Path, ext: str) -> list[str]:
+    def _build_export_command(self, source: Path, target: Path, ext: str, preset: str) -> list[str]:
         cmd = [
             self.ffmpeg,
             "-y",
@@ -268,11 +281,26 @@ class FirstFrameApp:
             "1",
         ]
         if ext == "jpg":
-            cmd.extend(["-q:v", "2"])
+            jpeg_quality_map = {
+                "High": "2",
+                "Balanced": "5",
+                "Small": "9",
+            }
+            cmd.extend(["-q:v", jpeg_quality_map.get(preset, "5")])
         elif ext == "png":
-            cmd.extend(["-compression_level", "3"])
+            png_compression_map = {
+                "High": "2",
+                "Balanced": "5",
+                "Small": "9",
+            }
+            cmd.extend(["-compression_level", png_compression_map.get(preset, "5")])
         elif ext == "tiff":
-            cmd.extend(["-compression_algo", "lzw"])
+            tiff_compression_map = {
+                "High": "lzw",
+                "Balanced": "deflate",
+                "Small": "zlib",
+            }
+            cmd.extend(["-compression_algo", tiff_compression_map.get(preset, "deflate")])
         cmd.append(str(target))
         return cmd
 
