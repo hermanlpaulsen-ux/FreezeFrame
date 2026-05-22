@@ -122,10 +122,11 @@ Objective: modernize interaction model and support advanced workflows.
 
 Deliverables:
 
-- New layout:
-  - Left panel: source/mode/options
-  - Center: file queue + progress
-  - Right/bottom: preview and logs
+- New layout and UX shell:
+  - Input/output cards
+  - Format + quality controls
+  - Action row + bottom progress
+  - Queue/preview/log panels as advanced view
 - Better task feedback:
   - Per-file progress and failures
   - Retry failed items
@@ -135,6 +136,38 @@ Acceptance criteria:
 
 - All Phase 1–4 features are accessible without clutter.
 - Core quick-start flow remains <= 3 clicks.
+
+### Phase 5A: Qt Native UI Track (Current)
+
+Objective: deliver a polished, offline native desktop app with modern controls and scalable architecture.
+
+Deliverables:
+
+- Migration from Tkinter to PySide6/Qt for native desktop rendering and richer styling control.
+- Modern card-based UI shell:
+  - Input folder card with Finder picker
+  - Output folder card with Finder picker
+  - Output formats (JPEG/PNG/TIFF)
+  - Quality preset selector
+  - TIFF bit-depth selector shown contextually when TIFF is enabled
+  - Progress and status panel
+- Refined visual system:
+  - Blue/teal accent palette
+  - Hover/pressed states on interactive controls
+  - Improved sizing/spacing and control density
+- Existing run-state behaviors preserved:
+  - `Start` -> `Restart` after completion
+  - `Open output folder` appears only when a completed run has a valid output path
+  - Close warning while processing is active
+- Fully offline runtime with bundled ffmpeg strategy unchanged.
+
+Acceptance criteria:
+
+- Native app launches and runs without terminal window.
+- UI follows design direction and remains readable in macOS dark mode.
+- Start action validates folders and format selection.
+- TIFF bit-depth control only appears when TIFF is checked, aligned on the same row as quality.
+- Progress/status update from 0% to 100% during real processing.
 
 ## Phase 6: Windows and Linux
 
@@ -169,6 +202,18 @@ Acceptance criteria:
 8. Implement format-specific output routing.
 9. Deliver redesigned UI shell with queue + preview panes.
 10. Add cross-platform adapters and CI matrix build.
+
+## Current Sprint Focus
+
+1. Continue iterative polish of the Qt native UI to match reference quality.
+2. Maintain existing processing stability while improving layout responsiveness and interaction feedback.
+3. Prepare next execution-control enhancements for long-running jobs.
+
+## UI Follow-Ups
+
+1. Implement a dedicated `Stop process` button to cancel an active run explicitly.
+2. Improve title bar treatment on macOS (transparent/blended native approach).
+3. Add final spacing and typography pass for format controls across all window sizes.
 
 ## Risks and Mitigations
 
