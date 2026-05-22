@@ -24,6 +24,13 @@ Desktop app for extracting the first frame from video files and saving them as i
   - `High`: lowest compression artifacts, larger files
   - `Balanced`: default quality/size tradeoff
   - `Small`: stronger compression, smaller files
+- Bit-depth behavior:
+  - `JPEG`: always 8-bit
+  - `PNG`: always 8-bit
+  - `TIFF`: selectable `8-bit` or `16-bit (if supported by source)`
+- Output naming:
+  - Mirrors source filename and appends preset suffix
+  - Example: `my_video_high.jpg`, `my_video_balanced.png`, `my_video_small.tiff`
 - Progress bar and per-run status
 - `Start` becomes `Restart` after completion
 - `Open output folder` appears after a successful run

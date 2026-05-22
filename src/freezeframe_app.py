@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import re
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -28,7 +29,8 @@ class FirstFrameApp:
         self.jpeg_enabled_var = tk.BooleanVar(value=True)
         self.png_enabled_var = tk.BooleanVar(value=False)
         self.tiff_enabled_var = tk.BooleanVar(value=False)
-        self.quality_preset_var = tk.StringVar(value="Balanced")
+        self.quality_preset_var = tk.StringVar(value="High")
+        self.tiff_bit_depth_var = tk.StringVar(value="8-bit")
 
         self.output_manually_set = False
         self.last_output_dir = ""
@@ -76,6 +78,7 @@ class FirstFrameApp:
         self._folder_card(outer, "Input Folder", "Select the folder containing the input files.", self.input_var, self.choose_input_folder, "Open...")
         self._folder_card(outer, "Output Folder", "Select where output files will be saved.", self.output_var, self.choose_output_folder, "Open...")
         self._format_card(outer)
+        self._update_tiff_controls_visibility()
 
         footer = ttk.Frame(outer, padding=(0, 14, 0, 0))
         footer.pack(fill="x", expand=True)
@@ -120,7 +123,12 @@ class FirstFrameApp:
         row.pack(fill="x")
         ttk.Checkbutton(row, text="JPEG", variable=self.jpeg_enabled_var).pack(side="left", padx=(0, 14))
         ttk.Checkbutton(row, text="PNG", variable=self.png_enabled_var).pack(side="left", padx=(0, 14))
-        ttk.Checkbutton(row, text="TIFF", variable=self.tiff_enabled_var).pack(side="left")
+        ttk.Checkbutton(
+            row,
+            text="TIFF",
+            variable=self.tiff_enabled_var,
+            command=self._update_tiff_controls_visibility,
+        ).pack(side="left")
         quality_row = ttk.Frame(card)
         quality_row.pack(fill="x", pady=(12, 0))
         ttk.Label(quality_row, text="Quality Preset:", style="Body.TLabel").pack(side="left")
@@ -132,7 +140,26 @@ class FirstFrameApp:
             width=12,
         )
         preset_box.pack(side="left", padx=(10, 0))
-        preset_box.current(1)
+        preset_box.current(0)
+
+        self.tiff_row = ttk.Frame(card)
+        self.tiff_row.pack(fill="x", pady=(12, 0))
+        ttk.Label(self.tiff_row, text="TIFF Bit Depth:", style="Body.TLabel").pack(side="left")
+        tiff_box = ttk.Combobox(
+            self.tiff_row,
+            textvariable=self.tiff_bit_depth_var,
+            state="readonly",
+            values=("8-bit", "16-bit (if supported)"),
+            width=22,
+        )
+        tiff_box.pack(side="left", padx=(10, 0))
+        tiff_box.current(0)
+
+    def _update_tiff_controls_visibility(self) -> None:
+        if self.tiff_enabled_var.get():
+            self.tiff_row.pack(fill="x", pady=(12, 0))
+        else:
+            self.tiff_row.pack_forget()
 
     def _show_open_output_button(self, show: bool) -> None:
         if show:
@@ -249,8 +276,15 @@ class FirstFrameApp:
             for ext, folder_name in selected_formats:
                 if self.stop_requested:
                     break
-                target = output_dir / folder_name / f"{file.stem}.{ext}"
-                cmd = self._build_export_command(file, target, ext, self.quality_preset_var.get())
+                preset_suffix = self.quality_preset_var.get().strip().lower().replace(" ", "-")
+                target = output_dir / folder_name / f"{file.stem}_{preset_suffix}.{ext}"
+                cmd = self._build_export_command(
+                    file,
+                    target,
+                    ext,
+                    self.quality_preset_var.get(),
+                    self.tiff_bit_depth_var.get(),
+                )
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 with self.process_lock:
                     self.active_processes.append(proc)
@@ -267,7 +301,24 @@ class FirstFrameApp:
                 self.root.after(0, self._update_progress, completed, total, pct)
         self.root.after(0, self._finish, total, completed, output_dir, failed, self.stop_requested)
 
-    def _build_export_command(self, source: Path, target: Path, ext: str, preset: str) -> list[str]:
+    def _build_export_command(
+        self,
+        source: Path,
+        target: Path,
+        ext: str,
+        preset: str,
+        tiff_bit_depth_setting: str,
+    ) -> list[str]:
+        if ext == "tiff":
+            source_supports_16_bit = self._source_supports_16_bit(source)
+            use_tiff_16_bit = tiff_bit_depth_setting.startswith("16-bit") and source_supports_16_bit
+            output_format = "rgb48le" if use_tiff_16_bit else "rgb24"
+        elif ext == "png":
+            output_format = "rgb24"
+        else:
+            # JPEG: always force 8-bit output.
+            output_format = "yuvj420p"
+
         cmd = [
             self.ffmpeg,
             "-y",
@@ -276,7 +327,7 @@ class FirstFrameApp:
             "-i",
             str(source),
             "-vf",
-            "select=eq(n\\,0),format=yuvj420p",
+            f"select=eq(n\\,0),format={output_format}",
             "-vframes",
             "1",
         ]
@@ -303,6 +354,42 @@ class FirstFrameApp:
             cmd.extend(["-compression_algo", tiff_compression_map.get(preset, "deflate")])
         cmd.append(str(target))
         return cmd
+
+    def _source_supports_16_bit(self, source: Path) -> bool:
+        ffprobe = str(Path(self.ffmpeg).with_name("ffprobe"))
+        if not Path(ffprobe).is_file():
+            return False
+        probe = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=pix_fmt,bits_per_raw_sample",
+                "-of",
+                "default=nw=1:nk=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            return False
+        lines = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+        for line in lines:
+            if line.isdigit() and int(line) > 8:
+                return True
+        pix_fmt = lines[0] if lines else ""
+        if re.search(r"p(10|12|14|16)(le|be)?$", pix_fmt):
+            return True
+        if re.search(r"(rgb|bgr|gbr)p?(30|36|48|64)(le|be)?$", pix_fmt):
+            return True
+        if re.search(r"gray(10|12|14|16)(le|be)?$", pix_fmt):
+            return True
+        return False
 
     def _update_progress(self, completed: int, total: int, pct: int) -> None:
         self.progress_value.set(pct)
