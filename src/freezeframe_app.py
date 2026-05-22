@@ -25,6 +25,9 @@ class FirstFrameApp:
         self.status_var = tk.StringVar(value="Choose input and output folders to begin.")
         self.progress_text_var = tk.StringVar(value="0%")
         self.progress_value = tk.DoubleVar(value=0.0)
+        self.jpeg_enabled_var = tk.BooleanVar(value=True)
+        self.png_enabled_var = tk.BooleanVar(value=False)
+        self.tiff_enabled_var = tk.BooleanVar(value=False)
 
         self.output_manually_set = False
         self.last_output_dir = ""
@@ -70,7 +73,8 @@ class FirstFrameApp:
         ttk.Label(top_card, text="FreezeFrame", style="SectionTitle.TLabel").pack(anchor="w")
 
         self._folder_card(outer, "Input Folder", "Select the folder containing the input files.", self.input_var, self.choose_input_folder, "Open...")
-        self._folder_card(outer, "Output Folder", "Select where output JPEG files will be saved.", self.output_var, self.choose_output_folder, "Open...")
+        self._folder_card(outer, "Output Folder", "Select where output files will be saved.", self.output_var, self.choose_output_folder, "Open...")
+        self._format_card(outer)
 
         footer = ttk.Frame(outer, padding=(0, 14, 0, 0))
         footer.pack(fill="x", expand=True)
@@ -101,6 +105,21 @@ class FirstFrameApp:
         ttk.Label(text_block, text=helper, style="Body.TLabel").pack(anchor="w", pady=(4, 10))
         ttk.Button(top_row, text=button_text, style="Browse.TButton", command=command, width=11).pack(side="right", pady=(8, 0))
         ttk.Entry(card, textvariable=variable).pack(fill="x", pady=(6, 0), ipady=8)
+
+    def _format_card(self, parent) -> None:
+        card = ttk.Frame(parent, padding=(20, 18))
+        card.pack(fill="x", pady=(16, 0))
+        ttk.Label(card, text="Output Formats", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            card,
+            text="Choose one or more formats. Files are saved to format subfolders (JPEG/PNG/TIFF).",
+            style="Body.TLabel",
+        ).pack(anchor="w", pady=(4, 10))
+        row = ttk.Frame(card)
+        row.pack(fill="x")
+        ttk.Checkbutton(row, text="JPEG", variable=self.jpeg_enabled_var).pack(side="left", padx=(0, 14))
+        ttk.Checkbutton(row, text="PNG", variable=self.png_enabled_var).pack(side="left", padx=(0, 14))
+        ttk.Checkbutton(row, text="TIFF", variable=self.tiff_enabled_var).pack(side="left")
 
     def _show_open_output_button(self, show: bool) -> None:
         if show:
@@ -164,18 +183,38 @@ class FirstFrameApp:
             output_dir = input_dir / "Stills"
             self.output_var.set(str(output_dir))
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        selected_formats = self._selected_formats()
+        if not selected_formats:
+            messagebox.showerror("No format selected", "Choose at least one output format: JPEG, PNG, or TIFF.")
+            return
+
+        for _, folder_name in selected_formats:
+            (output_dir / folder_name).mkdir(parents=True, exist_ok=True)
+
         files = self._collect_files(input_dir)
         if not files:
             messagebox.showwarning("No video files", "No supported video files found in input folder.")
             return
+        total_jobs = len(files) * len(selected_formats)
         self.is_processing = True
         self.stop_requested = False
         self.last_output_dir = ""
         self.progress_value.set(0)
         self.progress_text_var.set("0%")
-        self.status_var.set(f"Processing 0/{len(files)}...")
+        self.status_var.set(f"Processing 0/{total_jobs}...")
         self._set_busy_mode()
-        threading.Thread(target=self._process_files, args=(files, output_dir), daemon=True).start()
+        threading.Thread(target=self._process_files, args=(files, output_dir, selected_formats), daemon=True).start()
+
+    def _selected_formats(self) -> list[tuple[str, str]]:
+        formats: list[tuple[str, str]] = []
+        if self.jpeg_enabled_var.get():
+            formats.append(("jpg", "JPEG"))
+        if self.png_enabled_var.get():
+            formats.append(("png", "PNG"))
+        if self.tiff_enabled_var.get():
+            formats.append(("tiff", "TIFF"))
+        return formats
 
     def _terminate_active_processes(self) -> None:
         with self.process_lock:
@@ -187,44 +226,55 @@ class FirstFrameApp:
             except Exception:
                 pass
 
-    def _process_files(self, files: list[Path], output_dir: Path) -> None:
-        total = len(files)
+    def _process_files(self, files: list[Path], output_dir: Path, selected_formats: list[tuple[str, str]]) -> None:
+        total = len(files) * len(selected_formats)
         completed = 0
         failed: list[str] = []
         for file in files:
             if self.stop_requested:
                 break
-            target = output_dir / f"{file.stem}.jpg"
-            cmd = [
-                self.ffmpeg,
-                "-y",
-                "-hwaccel",
-                "none",
-                "-i",
-                str(file),
-                "-vf",
-                "select=eq(n\\,0),format=yuvj420p",
-                "-vframes",
-                "1",
-                "-q:v",
-                "2",
-                str(target),
-            ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            with self.process_lock:
-                self.active_processes.append(proc)
-            rc = proc.wait()
-            with self.process_lock:
-                if proc in self.active_processes:
-                    self.active_processes.remove(proc)
-            if self.stop_requested:
-                break
-            if rc != 0:
-                failed.append(file.name)
-            completed += 1
-            pct = int((completed / total) * 100)
-            self.root.after(0, self._update_progress, completed, total, pct)
+            for ext, folder_name in selected_formats:
+                if self.stop_requested:
+                    break
+                target = output_dir / folder_name / f"{file.stem}.{ext}"
+                cmd = self._build_export_command(file, target, ext)
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with self.process_lock:
+                    self.active_processes.append(proc)
+                rc = proc.wait()
+                with self.process_lock:
+                    if proc in self.active_processes:
+                        self.active_processes.remove(proc)
+                if self.stop_requested:
+                    break
+                if rc != 0:
+                    failed.append(f"{file.name} [{folder_name}]")
+                completed += 1
+                pct = int((completed / total) * 100) if total else 0
+                self.root.after(0, self._update_progress, completed, total, pct)
         self.root.after(0, self._finish, total, completed, output_dir, failed, self.stop_requested)
+
+    def _build_export_command(self, source: Path, target: Path, ext: str) -> list[str]:
+        cmd = [
+            self.ffmpeg,
+            "-y",
+            "-hwaccel",
+            "none",
+            "-i",
+            str(source),
+            "-vf",
+            "select=eq(n\\,0),format=yuvj420p",
+            "-vframes",
+            "1",
+        ]
+        if ext == "jpg":
+            cmd.extend(["-q:v", "2"])
+        elif ext == "png":
+            cmd.extend(["-compression_level", "3"])
+        elif ext == "tiff":
+            cmd.extend(["-compression_algo", "lzw"])
+        cmd.append(str(target))
+        return cmd
 
     def _update_progress(self, completed: int, total: int, pct: int) -> None:
         self.progress_value.set(pct)
@@ -247,8 +297,8 @@ class FirstFrameApp:
             self.status_var.set(f"Done with errors. Exported {completed - len(failed)}/{total} files.")
             messagebox.showwarning("Completed with errors", f"{len(failed)} file(s) failed:\n" + "\n".join(failed[:15]))
             return
-        self.status_var.set(f"Done. Exported {completed} JPEG file(s).")
-        messagebox.showinfo("Completed", f"Exported {completed} JPEG file(s) to:\n{output_dir}")
+        self.status_var.set(f"Done. Exported {completed} image file(s).")
+        messagebox.showinfo("Completed", f"Exported {completed} image file(s) to:\n{output_dir}")
 
     def open_output_folder(self) -> None:
         path = self.last_output_dir or self.output_var.get().strip()

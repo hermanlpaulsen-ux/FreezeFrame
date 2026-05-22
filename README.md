@@ -1,6 +1,6 @@
 # FreezeFrame
 
-Desktop app for extracting the first frame from video files and saving them as JPEG images.
+Desktop app for extracting the first frame from video files and saving them as images.
 
 ## Roadmap
 
@@ -15,6 +15,11 @@ Desktop app for extracting the first frame from video files and saving them as J
 - Native macOS app window (no Terminal window required)
 - Input and output folder pickers
 - Default output suggestion: `InputFolder/Stills`
+- Multi-format output: `JPEG`, `PNG`, `TIFF`
+- Format-specific output subfolders under output path:
+  - `.../Stills/JPEG`
+  - `.../Stills/PNG`
+  - `.../Stills/TIFF`
 - Progress bar and per-run status
 - `Start` becomes `Restart` after completion
 - `Open output folder` appears after a successful run
