@@ -235,7 +235,7 @@ class FreezeFrameWindow(QMainWindow):
         self.input_card, self.input_path_label = self._build_folder_card(
             "Input Folder",
             "Select the folder containing the input files.",
-            "Open...",
+            "Add",
             self.choose_input_folder,
         )
         self.root_layout.addWidget(self.input_card)
@@ -243,7 +243,7 @@ class FreezeFrameWindow(QMainWindow):
         self.output_card, self.output_path_label = self._build_folder_card(
             "Output Folder",
             "Select where output files will be saved.",
-            "Open...",
+            "Add",
             self.choose_output_folder,
         )
         self.root_layout.addWidget(self.output_card)
@@ -258,42 +258,41 @@ class FreezeFrameWindow(QMainWindow):
         format_desc.setObjectName("SectionDesc")
 
         format_row = QHBoxLayout()
-        format_row.setSpacing(20)
+        format_row.setSpacing(28)
+        format_row.setContentsMargins(0, 12, 0, 12)
         self.jpeg_cb = QCheckBox("JPEG")
         self.jpeg_cb.setChecked(True)
         self.png_cb = QCheckBox("PNG")
         self.tiff_cb = QCheckBox("TIFF")
         self.tiff_cb.stateChanged.connect(self._update_tiff_controls_visibility)
+        for checkbox in (self.jpeg_cb, self.png_cb, self.tiff_cb):
+            checkbox.setMinimumHeight(24)
+            checkbox.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         format_row.addWidget(self.jpeg_cb)
         format_row.addWidget(self.png_cb)
         format_row.addWidget(self.tiff_cb)
         format_row.addStretch(1)
-
-        quality_grid = QGridLayout()
-        quality_grid.setHorizontalSpacing(18)
-        quality_grid.setVerticalSpacing(10)
-        quality_label = QLabel("Quality Preset:")
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["High", "Balanced", "Small"])
-        self.preset_combo.setCurrentText("High")
-        self.preset_combo.setFixedWidth(150)
-        quality_grid.addWidget(quality_label, 0, 0)
-        quality_grid.addWidget(self.preset_combo, 0, 1)
-
-        tiff_label = QLabel("TIFF Bit Depth:")
-        tiff_label.setObjectName("TiffLabel")
+        self.tiff_label = QLabel("TIFF Bit Depth:")
+        self.tiff_label.setObjectName("InlineLabel")
         self.tiff_combo = QComboBox()
         self.tiff_combo.addItems(["8-bit", "16-bit (if supported)"])
         self.tiff_combo.setFixedWidth(190)
         self.tiff_combo.setObjectName("TiffCombo")
-        quality_grid.addWidget(tiff_label, 0, 2)
-        quality_grid.addWidget(self.tiff_combo, 0, 3)
-        quality_grid.setColumnStretch(4, 1)
+        format_row.addWidget(self.tiff_label)
+        format_row.addWidget(self.tiff_combo)
+
+        quality_label = QLabel("Quality Preset:")
+        quality_label.setObjectName("InlineLabel")
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(["High", "Balanced", "Small"])
+        self.preset_combo.setCurrentText("High")
+        self.preset_combo.setFixedWidth(150)
+        format_row.addWidget(quality_label)
+        format_row.addWidget(self.preset_combo)
 
         format_layout.addWidget(format_title)
         format_layout.addWidget(format_desc)
         format_layout.addLayout(format_row)
-        format_layout.addLayout(quality_grid)
         self.root_layout.addWidget(self.format_card)
         self._update_tiff_controls_visibility()
 
@@ -307,13 +306,18 @@ class FreezeFrameWindow(QMainWindow):
         self.action_button = QPushButton("Start")
         self.action_button.setObjectName("PrimaryButton")
         self.action_button.clicked.connect(self.start_processing)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setObjectName("PrimaryButton")
+        self.stop_button.clicked.connect(self.stop_processing)
+        self.stop_button.hide()
         self.open_output_button = QPushButton("Open output folder")
-        self.open_output_button.setObjectName("SecondaryButton")
+        self.open_output_button.setObjectName("OutputButton")
         self.open_output_button.clicked.connect(self.open_output_folder)
         self.open_output_button.hide()
 
         button_row.addWidget(self.action_button, 1)
-        button_row.addWidget(self.open_output_button)
+        button_row.addWidget(self.stop_button, 1)
+        button_row.addWidget(self.open_output_button, 1)
 
         self.status_label = QLabel("Choose input and output folders to begin.")
         self.status_label.setObjectName("StatusLabel")
@@ -377,7 +381,7 @@ class FreezeFrameWindow(QMainWindow):
         open_button = QPushButton(button_text)
         open_button.setObjectName("OpenButton")
         open_button.clicked.connect(callback)
-        open_button.setFixedWidth(132)
+        open_button.setFixedWidth(116)
         open_button.setFixedHeight(38)
 
         top_row.addLayout(text_col, 1)
@@ -418,6 +422,7 @@ class FreezeFrameWindow(QMainWindow):
             #Subtitle { font-size: 12px; color: #9DB0CC; }
             #SectionTitle { font-size: 15px; font-weight: 650; color: #ECF2FF; }
             #SectionDesc { font-size: 12px; color: #96A7C2; }
+            #InlineLabel { color: #DCE8FF; }
             #PathField {
               border: 1px solid #223350;
               border-radius: 12px;
@@ -446,6 +451,11 @@ class FreezeFrameWindow(QMainWindow):
               background-color: #122034;
               border-color: #1F4F85;
             }
+            QPushButton:disabled {
+              color: #8CA0BE;
+              border-color: #2A3E5E;
+              background-color: #1A2436;
+            }
             QPushButton#PrimaryButton {
               min-height: 54px;
               font-size: 14px;
@@ -468,6 +478,33 @@ class FreezeFrameWindow(QMainWindow):
                 stop:0 #16B99D, stop:1 #2367D8
               );
             }
+            QPushButton#PrimaryButton:disabled {
+              color: #8CA0BE;
+              border: 1px solid #2A3E5E;
+              background-color: #1A2436;
+            }
+            QPushButton#OutputButton {
+              min-height: 54px;
+              font-size: 14px;
+              color: #F3FFF8;
+              border: 1px solid #1EBA78;
+              background-color: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #27D491, stop:1 #16A34A
+              );
+            }
+            QPushButton#OutputButton:hover {
+              background-color: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #35E2A1, stop:1 #1DB857
+              );
+            }
+            QPushButton#OutputButton:pressed {
+              background-color: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #1EBD7F, stop:1 #13863D
+              );
+            }
             QPushButton#OpenButton, QPushButton#SecondaryButton {
               min-height: 32px;
               font-size: 12px;
@@ -477,17 +514,19 @@ class FreezeFrameWindow(QMainWindow):
               font-size: 12px;
               spacing: 8px;
               color: #EAF1FF;
+              min-height: 22px;
             }
             QCheckBox::indicator {
               width: 16px;
               height: 16px;
-              border: 1px solid #38557F;
+              border: 1px solid #3C5E8D;
               border-radius: 4px;
-              background-color: #112039;
+              background-color: #10203A;
             }
             QCheckBox::indicator:checked {
               border: 1px solid #22C9B3;
               background-color: #1AC7AE;
+              image: none;
             }
             QComboBox {
               border: 1px solid #2A3E5E;
@@ -561,6 +600,7 @@ class FreezeFrameWindow(QMainWindow):
         self.last_output_dir = ""
         self.action_button.setText("Start")
         self.action_button.setEnabled(True)
+        self.stop_button.hide()
         self.open_output_button.hide()
 
     def _selected_formats(self) -> list[tuple[str, str]]:
@@ -580,9 +620,7 @@ class FreezeFrameWindow(QMainWindow):
 
     def _update_tiff_controls_visibility(self) -> None:
         visible = self.tiff_cb.isChecked()
-        tiff_label = self.findChild(QLabel, "TiffLabel")
-        if tiff_label:
-            tiff_label.setVisible(visible)
+        self.tiff_label.setVisible(visible)
         self.tiff_combo.setVisible(visible)
 
     def start_processing(self) -> None:
@@ -629,8 +667,10 @@ class FreezeFrameWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_pct.setText("0%")
         self.status_label.setText(f"Processing 0/{total_jobs}...")
-        self.action_button.setText("Processing...")
+        self.action_button.setText("Restart")
         self.action_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.stop_button.show()
         self.open_output_button.hide()
 
         self.worker = FrameExportWorker(
@@ -655,6 +695,7 @@ class FreezeFrameWindow(QMainWindow):
         self.is_processing = False
         self.worker = None
         self.last_output_dir = output_dir
+        self.stop_button.hide()
 
         if cancelled:
             pct = int((completed / total) * 100) if total else 0
@@ -685,6 +726,13 @@ class FreezeFrameWindow(QMainWindow):
         path = self.last_output_dir or self.output_path_label.text().strip()
         if path and path != "No folder selected" and Path(path).is_dir():
             subprocess.run(["open", path], check=False)
+
+    def stop_processing(self) -> None:
+        if not self.is_processing or not self.worker:
+            return
+        self.stop_button.setEnabled(False)
+        self.status_label.setText("Stopping process...")
+        self.worker.request_stop()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.is_processing and self.worker:
