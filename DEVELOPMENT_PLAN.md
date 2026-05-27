@@ -4,7 +4,7 @@ This plan translates product goals into an implementation roadmap with clear pha
 
 ## Product Goals
 
-- Add both batch folder processing and per-file processing workflows.
+- Support both folder-wide processing and single-file processing from one unified input flow.
 - Make frame selection explicit and easy (manual frame choice + preview).
 - Add watch-folder automation.
 - Support multiple output image formats with quality presets.
@@ -39,22 +39,22 @@ Acceptance criteria:
 - Existing behavior remains unchanged.
 - App can run with same current feature set after refactor.
 
-## Phase 1: Processing Modes (Batch + Per-file)
+## Phase 1: Processing Modes (Unified)
 
 Objective: support both folder-wide runs and targeted file runs.
 
 Deliverables:
 
-- Processing mode selector:
-  - Batch mode: process all supported files in selected folder
-  - Per-file mode: choose one or multiple files
+- Unified input model:
+  - `Add folder` => process all supported files in selected folder (batch)
+  - `Add file` => process only selected file (single-file run)
 - File queue model with status per item (`pending`, `running`, `done`, `failed`, `cancelled`).
 - Skip/overwrite behavior options.
 
 Acceptance criteria:
 
 - User can process a single file without scanning full folder.
-- Batch and per-file modes share the same execution engine.
+- Batch and single-file runs share one execution engine and one process/status area.
 
 ## Phase 2: Frame Selection + Preview
 
@@ -169,6 +169,47 @@ Acceptance criteria:
 - TIFF bit-depth control only appears when TIFF is checked, aligned on the same row as quality.
 - Progress/status update from 0% to 100% during real processing.
 
+### Phase 5B: File Options + Preview Controls (Current)
+
+Objective: expose advanced file-level controls in the unified window while preserving simple batch workflow.
+
+Deliverables:
+
+- Unified input/output card:
+  - `Add file` and `Add folder` on the same input row
+  - Output folder picker (default `Stills` near source)
+- Output format controls (JPEG/PNG/TIFF) with per-run options.
+- Custom resolution scaling:
+  - `Auto` (source size)
+  - `Custom height` input with aspect-ratio preserving width.
+- Custom bit depth controls for all selected formats:
+  - 8-bit, 16-bit, 32-bit options
+  - Capability-aware enablement based on source + codec support.
+- Quality granularity:
+  - Replace coarse preset with a Photoshop-style level `1–12`.
+  - Map 1–12 internally to ffmpeg args per format.
+- Preview panel:
+  - Small still preview from selected frame.
+  - Auto-refresh when frame number/slider changes.
+- Reliable frame-range resolution:
+  - Exact `nb_frames` when available
+  - `ffprobe -count_frames`/`-count_packets` fallbacks
+  - Duration*FPS estimate fallback with confidence labeling.
+
+Acceptance criteria:
+
+- User can export a selected frame from a single file with format/quality/bit-depth/scale controls in one pass.
+- Quality level persists visually and maps consistently to actual export behavior.
+- Unsupported bit-depth choices are disabled or clearly explained.
+- Preview renders quickly and matches export frame choice.
+
+## Next Fixes
+
+- Batch frame selection consistency:
+  - Ensure user-selected frame is consistently applied across every file in folder runs.
+  - Add explicit UI copy that batch exports use a shared frame index for all files.
+  - Add validation for out-of-range frame indices in batch mode (skip/adjust with clear status).
+
 ## Phase 6: Windows and Linux
 
 Objective: deliver stable cross-platform builds.
@@ -205,15 +246,15 @@ Acceptance criteria:
 
 ## Current Sprint Focus
 
-1. Continue iterative polish of the Qt native UI to match reference quality.
-2. Maintain existing processing stability while improving layout responsiveness and interaction feedback.
-3. Prepare next execution-control enhancements for long-running jobs.
+1. Implement two-tab architecture (`Batch` + `Single File`) with no regression in batch flow.
+2. Build single-file advanced options: custom height, bit depth, 1–12 quality, and preview.
+3. Keep process safety and UX consistency (start/stop/restart/open-output patterns).
 
 ## UI Follow-Ups
 
-1. Implement a dedicated `Stop process` button to cancel an active run explicitly.
-2. Improve title bar treatment on macOS (transparent/blended native approach).
-3. Add final spacing and typography pass for format controls across all window sizes.
+1. Improve title bar treatment on macOS (transparent/blended native approach).
+2. Add final spacing and typography pass for format controls across all window sizes.
+3. Add tab-specific onboarding hints so users understand Batch vs Single File intent instantly.
 
 ## Risks and Mitigations
 
