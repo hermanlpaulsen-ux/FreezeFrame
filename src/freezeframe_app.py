@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal, QTimer
-from PySide6.QtGui import QCloseEvent, QFont, QPixmap
+from PySide6.QtGui import QCloseEvent, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -40,6 +40,14 @@ from PySide6.QtWidgets import (
 
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mkv", ".avi"}
 logger = logging.getLogger("freezeframe")
+
+
+def resource_path(relative_path: str) -> Path:
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base_dir / relative_path
+
+SPIN_UP_ICON = resource_path("assets/spin-up.svg").as_posix()
+SPIN_DOWN_ICON = resource_path("assets/spin-down.svg").as_posix()
 
 
 class UI:
@@ -661,6 +669,9 @@ class FreezeFrameWindow(QMainWindow):
         self.setWindowTitle("FreezeFrame")
         self.resize(1320, 920)
         self.setMinimumSize(1180, 840)
+        app_icon_path = resource_path("assets/FreezeFrame_icon_1024.png")
+        if app_icon_path.is_file():
+            self.setWindowIcon(QIcon(str(app_icon_path)))
 
         self.ffmpeg = self._find_ffmpeg()
         self.ffprobe = self._find_ffprobe()
@@ -1159,10 +1170,24 @@ class FreezeFrameWindow(QMainWindow):
         header_layout.setContentsMargins(22, 20, 22, 20)
         header_layout.setSpacing(16)
 
-        icon = QLabel("❄")
+        icon = QLabel("")
         icon.setObjectName("HeaderIcon")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setFixedSize(76, 76)
+        logo_path = resource_path("assets/FreezeFrame_icon_1024.png")
+        if logo_path.is_file():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                icon.setPixmap(
+                    pixmap.scaled(
+                        54,
+                        54,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+        if not icon.pixmap():
+            icon.setText("❄")
 
         title_wrap = QVBoxLayout()
         title_wrap.setSpacing(2)
@@ -1531,21 +1556,45 @@ class FreezeFrameWindow(QMainWindow):
             QComboBox {{ padding: 2px {UI.SPACE_MD}px; }}
             QSpinBox {{
               padding: 2px {UI.SPACE_SM}px;
-              padding-right: 20px;
+              padding-right: 26px;
               selection-background-color: #2668D5;
+              min-height: {UI.HEIGHT_CONTROL}px;
+              max-height: {UI.HEIGHT_CONTROL}px;
             }}
             QComboBox:hover {{ border-color: {UI.BORDER_FOCUS}; background-color: #1A2D49; }}
-            QSpinBox::up-button, QSpinBox::down-button {{
-              width: 18px;
+            QSpinBox::up-button {{
+              subcontrol-origin: border;
+              subcontrol-position: top right;
+              width: 20px;
+              height: 20px;
               border: none;
               border-left: 1px solid {UI.BORDER_CONTROL};
+              border-bottom: 1px solid {UI.BORDER_CONTROL};
+              border-top-right-radius: {UI.RADIUS_CONTROL}px;
               background: #1A2D49;
             }}
-            QSpinBox::up-button {{ border-top-right-radius: {UI.RADIUS_CONTROL}px; }}
-            QSpinBox::down-button {{ border-bottom-right-radius: {UI.RADIUS_CONTROL}px; }}
+            QSpinBox::down-button {{
+              subcontrol-origin: border;
+              subcontrol-position: bottom right;
+              width: 20px;
+              height: 20px;
+              border: none;
+              border-left: 1px solid {UI.BORDER_CONTROL};
+              border-bottom-right-radius: {UI.RADIUS_CONTROL}px;
+              background: #1A2D49;
+            }}
             QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: #22406A; }}
             QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{ background: #1E3556; }}
-            QSpinBox::up-arrow, QSpinBox::down-arrow {{ width: 10px; height: 10px; }}
+            QSpinBox::up-arrow {{
+              image: url("{SPIN_UP_ICON}");
+              width: 8px;
+              height: 5px;
+            }}
+            QSpinBox::down-arrow {{
+              image: url("{SPIN_DOWN_ICON}");
+              width: 8px;
+              height: 5px;
+            }}
             QComboBox::drop-down {{ border: none; width: 22px; }}
             QComboBox QAbstractItemView {{
               background-color: #152744;
@@ -2196,6 +2245,9 @@ class FreezeFrameWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    app_icon_path = resource_path("assets/FreezeFrame_icon_1024.png")
+    if app_icon_path.is_file():
+        app.setWindowIcon(QIcon(str(app_icon_path)))
     font = QFont("SF Pro Display")
     app.setFont(font)
     window = FreezeFrameWindow()

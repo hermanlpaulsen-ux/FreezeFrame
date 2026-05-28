@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="FreezeFrame"
 ENTRYPOINT="${ROOT_DIR}/src/freezeframe_app.py"
+ICON_ICNS="${ROOT_DIR}/src/assets/FreezeFrame_icon.icns"
+ICON_PNG="${ROOT_DIR}/src/assets/FreezeFrame_icon_1024.png"
 
 if [[ ! -f "${ENTRYPOINT}" ]]; then
   echo "Missing entrypoint: ${ENTRYPOINT}"
@@ -61,6 +63,13 @@ PYI_ARGS=(
   --exclude-module sqlite3
   --exclude-module ssl
 )
+
+if [[ -f "${ICON_ICNS}" ]]; then
+  PYI_ARGS+=(--icon "${ICON_ICNS}")
+fi
+if [[ -d "${ROOT_DIR}/src/assets" ]]; then
+  PYI_ARGS+=(--add-data "${ROOT_DIR}/src/assets:assets")
+fi
 
 if [[ -n "${FFMPEG_BIN}" ]]; then
   echo "Bundling ffmpeg from: ${FFMPEG_BIN}"
