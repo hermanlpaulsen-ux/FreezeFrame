@@ -308,6 +308,83 @@ class FrameExportWorker(QThread):
         )
 
 
+class PreviewWorker(QThread):
+    finished_with_preview = Signal(int, int, str)
+    failed = Signal(int, int, str)
+
+    def __init__(
+        self,
+        request_id: int,
+        ffmpeg: str,
+        source: Path,
+        frame_number: int,
+        output_path: Path,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.request_id = request_id
+        self.ffmpeg = ffmpeg
+        self.source = source
+        self.frame_number = max(1, frame_number)
+        self.output_path = output_path
+        self._stop_requested = False
+        self._active_process: subprocess.Popen | None = None
+        self.timeout_seconds = 20
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+        if self._active_process and self._active_process.poll() is None:
+            try:
+                self._active_process.terminate()
+            except Exception:
+                pass
+
+    def run(self) -> None:
+        zero_based_frame = self.frame_number - 1
+        cmd = [
+            self.ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-hwaccel",
+            "none",
+            "-i",
+            str(self.source),
+            "-an",
+            "-vsync",
+            "0",
+            "-vf",
+            f"select=eq(n\\,{zero_based_frame}),scale=640:-2:flags=fast_bilinear,format=yuvj420p",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "10",
+            str(self.output_path),
+        ]
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._active_process = proc
+            rc = proc.wait(timeout=self.timeout_seconds)
+            self._active_process = None
+        except subprocess.TimeoutExpired:
+            self.request_stop()
+            self.failed.emit(self.request_id, self.frame_number, "Preview timed out")
+            return
+        except Exception as exc:
+            self.failed.emit(self.request_id, self.frame_number, str(exc))
+            return
+
+        if self._stop_requested:
+            return
+
+        if rc == 0 and self.output_path.is_file():
+            self.finished_with_preview.emit(self.request_id, self.frame_number, str(self.output_path))
+        else:
+            self.failed.emit(self.request_id, self.frame_number, "Preview unavailable")
+
+
 class FreezeFrameWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -324,6 +401,11 @@ class FreezeFrameWindow(QMainWindow):
         self.output_manually_set = False
         self.last_output_dir = ""
         self.preview_request_id = 0
+        self.preview_worker: PreviewWorker | None = None
+        self.preview_cache: dict[tuple[str, int], str] = {}
+        self.preview_cache_order: list[tuple[str, int]] = []
+        self.max_preview_cache_items = 80
+        self.is_scrubbing = False
 
         self._build_ui()
         self._apply_style()
@@ -781,6 +863,8 @@ class FreezeFrameWindow(QMainWindow):
         self.frame_slider.setPageStep(10)
         self.frame_slider.valueChanged.connect(self._sync_frame_spin_from_slider)
         self.frame_index_spin.valueChanged.connect(self._sync_frame_slider_from_spin)
+        self.frame_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.frame_slider.sliderReleased.connect(self._on_slider_released)
         self.frame_index_spin.setEnabled(False)
         self.frame_slider.setEnabled(False)
         box.addWidget(self.frame_slider)
@@ -1388,12 +1472,19 @@ class FreezeFrameWindow(QMainWindow):
             self.single_output_path.setText(str(p.parent / "Stills"))
         self.preview_image.setPixmap(QPixmap())
         self.preview_image.setText("Generating preview...")
-        total_frames = self._probe_frame_count(p)
-        max_frame = max(1, total_frames)
+        frame_result = self._resolve_frame_count(p)
+        max_frame = max(2, frame_result.frame_count)
         self.frame_slider.setRange(1, max_frame)
         self.frame_index_spin.setRange(1, max_frame)
         self.frame_slider.setValue(1)
         self.frame_index_spin.setValue(1)
+        self.frame_slider.setEnabled(True)
+        self.frame_index_spin.setEnabled(True)
+        if hasattr(self, "frame_count_info"):
+            if frame_result.confidence in ("estimated", "fallback"):
+                self.frame_count_info.setText(f"Frames: about {max_frame} ({frame_result.source})")
+            else:
+                self.frame_count_info.setText(f"Frames: {max_frame} ({frame_result.source})")
         self._update_single_bit_depth_support()
         self.generate_preview()
 
@@ -1452,12 +1543,70 @@ class FreezeFrameWindow(QMainWindow):
             self.frame_slider.blockSignals(False)
         self._queue_preview_update()
 
+    def _on_slider_pressed(self) -> None:
+        self.is_scrubbing = True
+
+    def _on_slider_released(self) -> None:
+        self.is_scrubbing = False
+        self.generate_preview()
+
+    def _active_preview_label(self) -> QLabel:
+        if hasattr(self, "preview_image") and self.preview_image.isVisible():
+            return self.preview_image
+        return self.batch_preview
+
+    def _display_preview_pixmap(self, image_path: str) -> None:
+        label = self._active_preview_label()
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            label.setText("Preview unavailable for selected frame")
+            return
+        scaled = pixmap.scaled(
+            label.width() - 20,
+            label.height() - 20,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        label.setPixmap(scaled)
+        label.setText("")
+
+    def _preview_cache_key(self, source: Path, frame_number: int) -> tuple[str, int]:
+        return (str(source.resolve()), int(frame_number))
+
+    def _get_cached_preview(self, source: Path, frame_number: int) -> str | None:
+        key = self._preview_cache_key(source, frame_number)
+        cached = self.preview_cache.get(key)
+        if cached and Path(cached).is_file():
+            return cached
+        if key in self.preview_cache:
+            self.preview_cache.pop(key, None)
+        return None
+
+    def _store_cached_preview(self, source: Path, frame_number: int, image_path: str) -> None:
+        key = self._preview_cache_key(source, frame_number)
+        if key not in self.preview_cache:
+            self.preview_cache_order.append(key)
+        self.preview_cache[key] = image_path
+        while len(self.preview_cache_order) > self.max_preview_cache_items:
+            old_key = self.preview_cache_order.pop(0)
+            old_path = self.preview_cache.pop(old_key, None)
+            if old_path:
+                try:
+                    Path(old_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     def _queue_preview_update(self) -> None:
         path_text = self.input_path_label.text().strip()
-        if not path_text or path_text == "No folder selected":
+        if hasattr(self, "single_file_path"):
+            single_path_text = self.single_file_path.text().strip()
+            if single_path_text and single_path_text != "No file selected":
+                path_text = single_path_text
+        if not path_text or path_text in ("No folder selected", "No file selected"):
             return
         if not Path(path_text).is_file():
             return
+        self.preview_timer.setInterval(250 if self.is_scrubbing else 80)
         self.preview_timer.start()
 
     def choose_output_folder(self) -> None:
@@ -1708,6 +1857,7 @@ class FreezeFrameWindow(QMainWindow):
             selected_formats=selected_formats,
             quality_preset=preset,
             tiff_bit_depth=tiff_depth,
+            frame_number=self.frame_index_spin.value(),
             parent=self,
         )
         self.single_worker.progress_updated.connect(self._on_single_progress)
@@ -1754,7 +1904,12 @@ class FreezeFrameWindow(QMainWindow):
 
     def generate_preview(self) -> None:
         path_text = self.input_path_label.text().strip()
-        if not path_text or path_text == "No folder selected":
+        if hasattr(self, "single_file_path"):
+            single_path_text = self.single_file_path.text().strip()
+            if single_path_text and single_path_text != "No file selected":
+                path_text = single_path_text
+
+        if not path_text or path_text in ("No folder selected", "No file selected"):
             return
         source = Path(path_text)
         if not source.is_file():
@@ -1763,58 +1918,70 @@ class FreezeFrameWindow(QMainWindow):
             QMessageBox.critical(self, "Missing ffmpeg", "ffmpeg was not found in app bundle or system paths.")
             return
 
+        frame_index = max(1, self.frame_slider.value())
+        cached = self._get_cached_preview(source, frame_index)
+        if cached:
+            self._display_preview_pixmap(cached)
+            return
+
         self.preview_request_id += 1
         request_id = self.preview_request_id
-        preview_path = Path(tempfile.gettempdir()) / f"freezeframe_preview_{request_id}.jpg"
-        frame_index = max(1, self.frame_slider.value())
-        zero_based_frame = frame_index - 1
-        self.batch_preview.setText("Generating preview...")
-        self.batch_preview.setPixmap(QPixmap())
 
-        cmd = [
-            self.ffmpeg,
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-hwaccel",
-            "none",
-            "-i",
-            str(source),
-            "-an",
-            "-vsync",
-            "0",
-            "-vf",
-            f"select=eq(n\\,{zero_based_frame}),scale=640:-2:flags=fast_bilinear,format=yuvj420p",
-            "-frames:v",
-            "1",
-            "-q:v",
-            "10",
-            str(preview_path),
-        ]
-        try:
-            run = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-        except subprocess.TimeoutExpired:
-            self.batch_preview.setText("Preview timed out for selected frame")
-            return
+        if self.preview_worker and self.preview_worker.isRunning():
+            self.preview_worker.request_stop()
+            self.preview_worker.wait(200)
+
+        preview_path = Path(tempfile.gettempdir()) / f"freezeframe_preview_{request_id}_{frame_index}.jpg"
+        label = self._active_preview_label()
+        existing = label.pixmap()
+        if existing is None or existing.isNull():
+            label.setText("Generating preview...")
+        else:
+            label.setToolTip("Generating preview...")
+
+        self.preview_worker = PreviewWorker(
+            request_id=request_id,
+            ffmpeg=self.ffmpeg,
+            source=source,
+            frame_number=frame_index,
+            output_path=preview_path,
+            parent=self,
+        )
+        self.preview_worker.finished_with_preview.connect(
+            lambda rid, frame, path, s=source: self._on_preview_ready(rid, s, frame, path)
+        )
+        self.preview_worker.failed.connect(self._on_preview_failed)
+        self.preview_worker.finished.connect(self._on_preview_worker_finished)
+        self.preview_worker.start()
+
+    def _on_preview_ready(self, request_id: int, source: Path, frame_number: int, image_path: str) -> None:
         if request_id != self.preview_request_id:
             return
-        if run.returncode != 0 or not preview_path.is_file():
-            self.batch_preview.setText("Preview unavailable for selected frame")
+        self._store_cached_preview(source, frame_number, image_path)
+        self._display_preview_pixmap(image_path)
+        self._active_preview_label().setToolTip("")
+
+    def _on_preview_failed(self, request_id: int, frame_number: int, message: str) -> None:
+        if request_id != self.preview_request_id:
             return
-        pixmap = QPixmap(str(preview_path))
-        if pixmap.isNull():
-            self.batch_preview.setText("Preview unavailable for selected frame")
-            return
-        scaled = pixmap.scaled(
-            self.batch_preview.width() - 20,
-            self.batch_preview.height() - 20,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.batch_preview.setPixmap(scaled)
+        label = self._active_preview_label()
+        existing = label.pixmap()
+        if existing is None or existing.isNull():
+            label.setText(message)
+        else:
+            # Keep last good preview visible; report issue non-disruptively.
+            label.setToolTip(message)
+            self.status_label.setText(f"Preview warning: {message} (frame {frame_number})")
+
+    def _on_preview_worker_finished(self) -> None:
+        worker = self.sender()
+        if worker is self.preview_worker:
+            self.preview_worker = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.preview_worker and self.preview_worker.isRunning():
+            self.preview_worker.request_stop()
+            self.preview_worker.wait(500)
         if self.is_processing and self.worker:
             should_close = QMessageBox.question(
                 self,
