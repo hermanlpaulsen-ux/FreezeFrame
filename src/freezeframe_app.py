@@ -42,6 +42,58 @@ VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mkv", ".avi"}
 logger = logging.getLogger("freezeframe")
 
 
+class UI:
+    # Spacing
+    SPACE_XS = 4
+    SPACE_SM = 8
+    SPACE_MD = 12
+    SPACE_LG = 16
+    SPACE_XL = 24
+    SPACE_XXL = 32
+    SPACE_SECTION = 48
+
+    # Radii
+    RADIUS_CONTROL = 10
+    RADIUS_CARD = 16
+    RADIUS_MEDIA = 20
+
+    # Heights
+    HEIGHT_COMPACT = 32
+    HEIGHT_CONTROL = 40
+    HEIGHT_PRIMARY = 44
+    HEIGHT_PREVIEW_MIN = 170
+
+    # Widths
+    PICKER_BUTTON_WIDTH = 116
+
+    # Typography
+    FONT_TITLE = 24
+    FONT_SECTION = 18
+    FONT_BODY = 13
+    FONT_SMALL = 12
+    FONT_BUTTON = 13
+
+    # Colors
+    BG_APP = "#143247"
+    BG_CARD = "#0E1624"
+    BG_CONTROL = "#122039"
+    BG_CONTROL_HOVER = "#1B3352"
+    BG_CONTROL_ACTIVE = "#152844"
+
+    BORDER_SUBTLE = "#1F2A44"
+    BORDER_CONTROL = "#2A3E5E"
+    BORDER_FOCUS = "#3A6AA8"
+
+    TEXT_PRIMARY = "#ECF2FF"
+    TEXT_SECONDARY = "#9DB0CC"
+    TEXT_MUTED = "#8CA0BE"
+
+    ACCENT = "#2E7BFF"
+    ACCENT_HOVER = "#3D8AFF"
+    ACCENT_ALT = "#1FD0B2"
+    SUCCESS = "#16A34A"
+
+
 @dataclass
 class FrameCountResult:
     frame_count: int
@@ -835,36 +887,27 @@ class FreezeFrameWindow(QMainWindow):
         scroll.setWidget(content)
 
         self.root_layout = QVBoxLayout(content)
-        self.root_layout.setContentsMargins(16, 16, 16, 16)
-        self.root_layout.setSpacing(18)
+        self.root_layout.setContentsMargins(UI.SPACE_LG, UI.SPACE_LG, UI.SPACE_LG, UI.SPACE_LG)
+        self.root_layout.setSpacing(UI.SPACE_XL)
         self.root_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
 
         self._build_tab_header(self.root_layout, active_index=0)
 
         self.batch_io_card = self._make_card()
         bio = QVBoxLayout(self.batch_io_card)
-        bio.setContentsMargins(24, 20, 24, 20)
-        bio.setSpacing(14)
+        self._configure_card_layout(bio)
         in_title = QLabel("Input")
         in_title.setObjectName("SectionTitle")
         in_desc = QLabel("Select an input folder or input file.")
         in_desc.setObjectName("SectionDesc")
         in_row = QHBoxLayout()
-        in_row.setSpacing(12)
-        self.input_path_label = QLabel("No folder selected")
-        self.input_path_label.setObjectName("PathField")
-        self.input_path_label.setFixedHeight(42)
-        self.input_path_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.input_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        in_btn = QPushButton("Add file")
-        in_btn.setObjectName("OpenButton")
-        in_btn.setFixedWidth(116)
-        in_btn.setFixedHeight(42)
+        in_row.setSpacing(UI.SPACE_MD)
+        self.input_path_label = self._make_path_label("No folder selected")
+        in_btn = self._make_secondary_button("Add file")
+        in_btn.setFixedWidth(UI.PICKER_BUTTON_WIDTH)
         in_btn.clicked.connect(self.choose_input_file)
-        in_folder_btn = QPushButton("Add folder")
-        in_folder_btn.setObjectName("OpenButton")
-        in_folder_btn.setFixedWidth(116)
-        in_folder_btn.setFixedHeight(42)
+        in_folder_btn = self._make_secondary_button("Add folder")
+        in_folder_btn.setFixedWidth(UI.PICKER_BUTTON_WIDTH)
         in_folder_btn.clicked.connect(self.choose_input_folder)
         in_row.addWidget(self.input_path_label, 1)
         in_row.addWidget(in_btn)
@@ -875,23 +918,17 @@ class FreezeFrameWindow(QMainWindow):
         in_block.addWidget(in_desc)
         in_block.addLayout(in_row)
         bio.addLayout(in_block)
-        bio.addSpacing(8)
+        bio.addSpacing(UI.SPACE_SM)
 
         out_title = QLabel("Output")
         out_title.setObjectName("SectionTitle")
         out_desc = QLabel("Select where output files will be saved.")
         out_desc.setObjectName("SectionDesc")
         out_row = QHBoxLayout()
-        out_row.setSpacing(12)
-        self.output_path_label = QLabel("No folder selected")
-        self.output_path_label.setObjectName("PathField")
-        self.output_path_label.setFixedHeight(42)
-        self.output_path_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.output_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        out_btn = QPushButton("Add")
-        out_btn.setObjectName("OpenButton")
-        out_btn.setFixedWidth(116)
-        out_btn.setFixedHeight(42)
+        out_row.setSpacing(UI.SPACE_MD)
+        self.output_path_label = self._make_path_label("No folder selected")
+        out_btn = self._make_secondary_button("Add")
+        out_btn.setFixedWidth(UI.PICKER_BUTTON_WIDTH)
         out_btn.clicked.connect(self.choose_output_folder)
         out_row.addWidget(self.output_path_label, 1)
         out_row.addWidget(out_btn)
@@ -905,23 +942,22 @@ class FreezeFrameWindow(QMainWindow):
 
         self.format_card = self._make_card()
         self.format_layout = QVBoxLayout(self.format_card)
-        self.format_layout.setContentsMargins(24, 20, 24, 20)
-        self.format_layout.setSpacing(12)
+        self._configure_card_layout(self.format_layout)
         format_title = QLabel("Options")
         format_title.setObjectName("SectionTitle")
         format_desc = QLabel("Choose one or more formats. Files are saved to format subfolders (JPEG/PNG/TIFF).")
         format_desc.setObjectName("SectionDesc")
 
         format_row = QHBoxLayout()
-        format_row.setSpacing(32)
-        format_row.setContentsMargins(0, 14, 0, 14)
+        format_row.setSpacing(UI.SPACE_XXL)
+        format_row.setContentsMargins(0, UI.SPACE_MD, 0, UI.SPACE_MD)
         self.jpeg_cb = QCheckBox("JPEG")
         self.jpeg_cb.setChecked(True)
         self.png_cb = QCheckBox("PNG")
         self.tiff_cb = QCheckBox("TIFF")
         self.tiff_cb.stateChanged.connect(self._update_tiff_controls_visibility)
         for checkbox in (self.jpeg_cb, self.png_cb, self.tiff_cb):
-            checkbox.setMinimumHeight(24)
+            checkbox.setMinimumHeight(UI.HEIGHT_COMPACT)
             checkbox.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         format_row.addWidget(self.jpeg_cb)
         format_row.addWidget(self.png_cb)
@@ -953,24 +989,21 @@ class FreezeFrameWindow(QMainWindow):
 
         self.action_card = self._make_card()
         action_layout = QVBoxLayout(self.action_card)
-        action_layout.setContentsMargins(24, 20, 24, 20)
-        action_layout.setSpacing(14)
+        self._configure_card_layout(action_layout)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(14)
+        top_row.setSpacing(UI.SPACE_MD)
         top_row.setAlignment(Qt.AlignmentFlag.AlignTop)
         left_col = QVBoxLayout()
-        left_col.setSpacing(10)
+        left_col.setSpacing(UI.SPACE_SM)
         button_row = QHBoxLayout()
-        button_row.setSpacing(8)
-        self.action_button = QPushButton("Start")
-        self.action_button.setObjectName("PrimaryButton")
+        button_row.setSpacing(UI.SPACE_SM)
+        self.action_button = self._make_primary_button("Start")
         self.action_button.clicked.connect(self.start_processing)
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setObjectName("PrimaryButton")
+        self.stop_button = self._make_primary_button("Stop")
         self.stop_button.clicked.connect(self.stop_processing)
         self.stop_button.hide()
-        self.open_output_button = QPushButton("Open output folder")
+        self.open_output_button = self._make_primary_button("Open output folder")
         self.open_output_button.setObjectName("OutputButton")
         self.open_output_button.clicked.connect(self.open_output_folder)
         self.open_output_button.hide()
@@ -982,19 +1015,20 @@ class FreezeFrameWindow(QMainWindow):
         self.status_label = QLabel("Choose input and output folders to begin.")
         self.status_label.setObjectName("StatusLabel")
         self.status_label.setWordWrap(True)
-        self.status_label.setMinimumHeight(22)
+        self.status_label.setMinimumHeight(UI.HEIGHT_COMPACT)
         left_col.addLayout(button_row)
         left_col.addWidget(self.status_label)
         left_col.addStretch(1)
         top_row.addLayout(left_col, 3)
 
         right_preview = QVBoxLayout()
-        right_preview.setSpacing(6)
+        right_preview.setSpacing(UI.SPACE_SM)
         self.batch_preview = QLabel("Preview not available in batch processing")
         self.batch_preview.setObjectName("PathField")
         self.batch_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.batch_preview.setMinimumHeight(120)
+        self.batch_preview.setMinimumHeight(UI.HEIGHT_PREVIEW_MIN)
         self.batch_preview.setMinimumWidth(360)
+        self.batch_preview.setObjectName("PreviewSurface")
         right_preview.addWidget(self.batch_preview)
         top_row.addLayout(right_preview, 2)
 
@@ -1013,7 +1047,7 @@ class FreezeFrameWindow(QMainWindow):
         self.progress_bar.setTextVisible(False)
 
         action_layout.addLayout(top_row)
-        action_layout.addSpacing(2)
+        action_layout.addSpacing(UI.SPACE_XS)
         action_layout.addLayout(progress_header)
         action_layout.addWidget(self.progress_bar)
         self.root_layout.addWidget(self.action_card)
@@ -1024,6 +1058,30 @@ class FreezeFrameWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("Card")
         return card
+
+    def _configure_card_layout(self, layout: QVBoxLayout) -> None:
+        layout.setContentsMargins(UI.SPACE_XL, UI.SPACE_LG, UI.SPACE_XL, UI.SPACE_LG)
+        layout.setSpacing(UI.SPACE_MD)
+
+    def _make_primary_button(self, text: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("PrimaryButton")
+        btn.setFixedHeight(UI.HEIGHT_PRIMARY)
+        return btn
+
+    def _make_secondary_button(self, text: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("OpenButton")
+        btn.setFixedHeight(UI.HEIGHT_CONTROL)
+        return btn
+
+    def _make_path_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("PathField")
+        label.setFixedHeight(UI.HEIGHT_CONTROL)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        return label
 
     def _build_unified_advanced_controls(self) -> None:
         box = self.format_layout
@@ -1263,7 +1321,7 @@ class FreezeFrameWindow(QMainWindow):
         top.addStretch(1)
         pv.addLayout(top)
         self.preview_image = QLabel("No preview generated")
-        self.preview_image.setObjectName("PathField")
+        self.preview_image.setObjectName("PreviewSurface")
         self.preview_image.setMinimumHeight(130)
         self.preview_image.setMaximumHeight(170)
         self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1365,260 +1423,161 @@ class FreezeFrameWindow(QMainWindow):
     def _apply_style(self) -> None:
         QApplication.setStyle("Fusion")
         self.setStyleSheet(
-            """
-            QMainWindow {
-              background-color: #102635;
-            }
-            #AppRoot, #AppCanvas, #AppScroll, #AppScroll > QWidget, QScrollArea {
-              background-color: #102635;
-            }
-            QTabWidget::pane {
-              border: 1px solid #1F2A44;
-              border-radius: 12px;
-              top: -1px;
-              background: #0A1220;
-            }
-            QTabBar::tab {
-              background: #13233A;
-              color: #9FB4D2;
-              border: 1px solid #2A3E5E;
-              border-bottom: none;
-              border-top-left-radius: 10px;
-              border-top-right-radius: 10px;
-              min-width: 120px;
-              padding: 8px 14px;
-              margin-right: 6px;
-            }
-            QTabBar::tab:selected {
-              background: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1FD0B2, stop:1 #2E7BFF
-              );
-              color: #F3FBFF;
-              border-color: #2E7BFF;
-            }
-            QTabBar::tab:hover:!selected {
-              background: #1B3352;
-              color: #D5E5FF;
-            }
-            #Card {
-              border: 1px solid #1F2A44;
-              border-radius: 16px;
-              background-color: #0E1624;
-            }
-            #HeaderIcon {
-              border: 1px solid #1E90FF;
-              border-radius: 14px;
+            f"""
+            QMainWindow, #AppRoot, #AppCanvas, #AppScroll, #AppScroll > QWidget, QScrollArea {{
+              background-color: {UI.BG_APP};
+            }}
+            #Card {{
+              border: 1px solid {UI.BORDER_SUBTLE};
+              border-radius: {UI.RADIUS_CARD}px;
+              background-color: {UI.BG_CARD};
+            }}
+            #HeaderIcon {{
+              border: 1px solid {UI.ACCENT};
+              border-radius: {UI.RADIUS_CONTROL}px;
               background-color: #0A2038;
               color: #1EC8FF;
               font-size: 28px;
-            }
-            #Title { font-size: 22px; font-weight: 700; color: #F3F7FF; }
-            #Subtitle { font-size: 12px; color: #9DB0CC; }
-            #SectionTitle { font-size: 15px; font-weight: 650; color: #ECF2FF; }
-            #SectionDesc { font-size: 12px; color: #96A7C2; }
-            #InlineLabel { color: #DCE8FF; }
-            #PathField {
-              border: 1px solid #223350;
-              border-radius: 12px;
-              padding: 8px 12px;
-              background-color: #122039;
-              color: #DCE8FF;
-              font-size: 12px;
-            }
-            #StatusLabel { color: #9DB0CC; font-size: 12px; }
-            #ProgressTitle { font-size: 15px; font-weight: 650; color: #ECF2FF; }
-            #ProgressPct { font-size: 15px; font-weight: 650; color: #9DB0CC; }
-            QPushButton {
-              border: 1px solid #2A3E5E;
-              border-radius: 12px;
-              padding: 8px 14px;
-              font-size: 12px;
+            }}
+            #Title {{ font-size: {UI.FONT_TITLE}px; font-weight: 650; color: {UI.TEXT_PRIMARY}; }}
+            #Subtitle {{ font-size: {UI.FONT_SMALL}px; color: {UI.TEXT_SECONDARY}; }}
+            #SectionTitle {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {UI.TEXT_PRIMARY}; }}
+            #SectionDesc {{ font-size: {UI.FONT_SMALL}px; color: {UI.TEXT_SECONDARY}; }}
+            #InlineLabel {{ font-size: {UI.FONT_SMALL}px; font-weight: 500; color: {UI.TEXT_SECONDARY}; }}
+            #PathField {{
+              border: 1px solid {UI.BORDER_CONTROL};
+              border-radius: {UI.RADIUS_CONTROL}px;
+              padding: {UI.SPACE_SM}px {UI.SPACE_MD}px;
+              background-color: {UI.BG_CONTROL};
+              color: {UI.TEXT_PRIMARY};
+              font-size: {UI.FONT_SMALL}px;
+            }}
+            #PreviewSurface {{
+              border: 1px solid {UI.BORDER_CONTROL};
+              border-radius: {UI.RADIUS_MEDIA}px;
+              padding: {UI.SPACE_MD}px;
+              background-color: {UI.BG_CONTROL};
+              color: {UI.TEXT_MUTED};
+              font-size: {UI.FONT_SMALL}px;
+            }}
+            #StatusLabel {{ color: {UI.TEXT_SECONDARY}; font-size: {UI.FONT_SMALL}px; }}
+            #ProgressTitle {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {UI.TEXT_PRIMARY}; }}
+            #ProgressPct {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {UI.TEXT_SECONDARY}; }}
+            QPushButton {{
+              border: 1px solid {UI.BORDER_CONTROL};
+              border-radius: {UI.RADIUS_CONTROL}px;
+              padding: {UI.SPACE_SM}px {UI.SPACE_MD}px;
+              font-size: {UI.FONT_BUTTON}px;
               font-weight: 600;
-              color: #E7EFFF;
-              background-color: #18263D;
-            }
-            QPushButton:hover {
-              background-color: #213553;
-              border-color: #35629A;
-            }
-            QPushButton:pressed {
-              background-color: #122034;
-              border-color: #1F4F85;
-            }
-            QPushButton:disabled {
-              color: #8CA0BE;
-              border-color: #2A3E5E;
+              color: {UI.TEXT_PRIMARY};
+              background-color: {UI.BG_CONTROL};
+            }}
+            QPushButton:hover {{
+              background-color: {UI.BG_CONTROL_HOVER};
+              border-color: {UI.BORDER_FOCUS};
+            }}
+            QPushButton:pressed {{
+              background-color: {UI.BG_CONTROL_ACTIVE};
+              border-color: {UI.BORDER_FOCUS};
+            }}
+            QPushButton:disabled {{
+              color: {UI.TEXT_MUTED};
+              border-color: {UI.BORDER_CONTROL};
               background-color: #1A2436;
-            }
-            QPushButton#PrimaryButton {
-              min-height: 54px;
-              font-size: 14px;
-              color: #F4FBFF;
-              border: 1px solid #1AAFE2;
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1FD0B2, stop:1 #2E7BFF
-              );
-            }
-            QPushButton#PrimaryButton:hover {
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #2ADDC0, stop:1 #3D8AFF
-              );
-            }
-            QPushButton#PrimaryButton:pressed {
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #16B99D, stop:1 #2367D8
-              );
-            }
-            QPushButton#PrimaryButton:disabled {
-              color: #8CA0BE;
-              border: 1px solid #2A3E5E;
-              background-color: #1A2436;
-            }
-            QPushButton#OutputButton {
-              min-height: 54px;
-              font-size: 14px;
-              color: #F3FFF8;
-              border: 1px solid #1EBA78;
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #27D491, stop:1 #16A34A
-              );
-            }
-            QPushButton#OutputButton:hover {
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #35E2A1, stop:1 #1DB857
-              );
-            }
-            QPushButton#OutputButton:pressed {
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1EBD7F, stop:1 #13863D
-              );
-            }
-            QPushButton#OpenButton, QPushButton#SecondaryButton {
-              min-height: 32px;
-              font-size: 12px;
-              padding: 6px 12px;
-            }
-            QPushButton#HeaderTabButton {
-              min-height: 30px;
-              min-width: 96px;
-              font-size: 12px;
-              border-radius: 10px;
-              padding: 6px 12px;
-              background: #142843;
-              border: 1px solid #2A3E5E;
-              color: #AFC4E1;
-            }
-            QPushButton#HeaderTabButton:checked {
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1FD0B2, stop:1 #2E7BFF
-              );
-              color: #F6FCFF;
-              border-color: #2E7BFF;
-            }
-            QCheckBox {
-              font-size: 12px;
-              spacing: 8px;
-              color: #EAF1FF;
-              min-height: 22px;
-            }
-            QCheckBox::indicator {
-              width: 16px;
-              height: 16px;
-              border: 1px solid #3C5E8D;
-              border-radius: 4px;
-              background-color: #10203A;
-            }
-            QCheckBox::indicator:checked {
-              border: 1px solid #22C9B3;
-              background-color: #1AC7AE;
-              image: none;
-            }
-            QComboBox {
-              border: 1px solid #2A3E5E;
-              border-radius: 12px;
-              padding: 2px 10px;
-              min-height: 24px;
-              font-size: 12px;
-              background-color: #14243D;
-              color: #EAF1FF;
-            }
-            QSpinBox {
-              border: 1px solid #2A3E5E;
-              border-radius: 12px;
-              padding: 2px 8px;
-              min-height: 24px;
-              font-size: 12px;
-              background-color: #14243D;
-              color: #EAF1FF;
+            }}
+            QPushButton#PrimaryButton {{
+              min-height: {UI.HEIGHT_PRIMARY}px;
+              font-size: {UI.FONT_BUTTON}px;
+              border: 1px solid {UI.ACCENT};
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {UI.ACCENT_ALT}, stop:1 {UI.ACCENT});
+            }}
+            QPushButton#PrimaryButton:hover {{
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #2ADDC0, stop:1 {UI.ACCENT_HOVER});
+            }}
+            QPushButton#PrimaryButton:pressed {{
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #16B99D, stop:1 #2367D8);
+            }}
+            QPushButton#OutputButton {{
+              min-height: {UI.HEIGHT_PRIMARY}px;
+              font-size: {UI.FONT_BUTTON}px;
+              border: 1px solid {UI.SUCCESS};
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #27D491, stop:1 #16A34A);
+            }}
+            QPushButton#OpenButton, QPushButton#SecondaryButton {{
+              min-height: {UI.HEIGHT_CONTROL}px;
+              max-height: {UI.HEIGHT_CONTROL}px;
+              font-size: {UI.FONT_BUTTON}px;
+              padding: 0 {UI.SPACE_MD}px;
+            }}
+            QCheckBox {{
+              font-size: {UI.FONT_SMALL}px;
+              spacing: {UI.SPACE_SM}px;
+              color: {UI.TEXT_PRIMARY};
+              min-height: {UI.HEIGHT_COMPACT}px;
+            }}
+            QCheckBox::indicator {{
+              width: 16px; height: 16px; border-radius: 4px;
+              border: 1px solid #3C5E8D; background-color: #10203A;
+            }}
+            QCheckBox::indicator:checked {{ border: 1px solid #22C9B3; background-color: #1AC7AE; image: none; }}
+            QComboBox, QSpinBox {{
+              border: 1px solid {UI.BORDER_CONTROL};
+              border-radius: {UI.RADIUS_CONTROL}px;
+              min-height: {UI.HEIGHT_CONTROL}px;
+              font-size: {UI.FONT_SMALL}px;
+              background-color: {UI.BG_CONTROL};
+              color: {UI.TEXT_PRIMARY};
+            }}
+            QComboBox {{ padding: 2px {UI.SPACE_MD}px; }}
+            QSpinBox {{
+              padding: 2px {UI.SPACE_SM}px;
+              padding-right: 20px;
               selection-background-color: #2668D5;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-              width: 16px;
+            }}
+            QComboBox:hover {{ border-color: {UI.BORDER_FOCUS}; background-color: #1A2D49; }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+              width: 18px;
               border: none;
+              border-left: 1px solid {UI.BORDER_CONTROL};
               background: #1A2D49;
-            }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-              background: #213553;
-            }
-            QComboBox:hover {
-              border-color: #3A6AA8;
-              background-color: #1A2D49;
-            }
-            QComboBox::drop-down {
-              border: none;
-              width: 22px;
-            }
-            QComboBox QAbstractItemView {
+            }}
+            QSpinBox::up-button {{ border-top-right-radius: {UI.RADIUS_CONTROL}px; }}
+            QSpinBox::down-button {{ border-bottom-right-radius: {UI.RADIUS_CONTROL}px; }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: #22406A; }}
+            QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{ background: #1E3556; }}
+            QSpinBox::up-arrow, QSpinBox::down-arrow {{ width: 10px; height: 10px; }}
+            QComboBox::drop-down {{ border: none; width: 22px; }}
+            QComboBox QAbstractItemView {{
               background-color: #152744;
-              color: #EAF1FF;
+              color: {UI.TEXT_PRIMARY};
               border: 1px solid #2D476D;
-              border-radius: 10px;
-              padding: 4px;
+              border-radius: {UI.RADIUS_CONTROL}px;
+              padding: {UI.SPACE_XS}px;
               selection-background-color: #2668D5;
               outline: 0;
-            }
-            QLabel { font-size: 12px; color: #DCE8FF; }
-            QSlider::groove:horizontal {
-              border: 1px solid #2A3E5E;
-              height: 6px;
-              border-radius: 4px;
-              background: #111E35;
-            }
-            QSlider::sub-page:horizontal {
-              border-radius: 4px;
-              background: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1FD0B2, stop:1 #2E7BFF
-              );
-            }
-            QSlider::handle:horizontal {
-              background: #DCE8FF;
-              border: 1px solid #2A3E5E;
-              width: 14px;
-              margin: -5px 0;
-              border-radius: 7px;
-            }
-            QProgressBar {
-              border: 1px solid #2A3E5E;
-              border-radius: 9px;
-              background-color: #111E35;
-              min-height: 18px;
-            }
-            QProgressBar::chunk {
+            }}
+            QLabel {{ font-size: {UI.FONT_SMALL}px; color: {UI.TEXT_PRIMARY}; }}
+            QSlider::groove:horizontal {{
+              border: 1px solid {UI.BORDER_CONTROL};
+              height: 4px; border-radius: 2px; background: #111E35;
+            }}
+            QSlider::sub-page:horizontal {{
+              border-radius: 2px;
+              background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {UI.ACCENT_ALT}, stop:1 {UI.ACCENT});
+            }}
+            QSlider::handle:horizontal {{
+              background: {UI.ACCENT};
+              border: 1px solid {UI.BORDER_CONTROL};
+              width: 16px; margin: -6px 0; border-radius: 8px;
+            }}
+            QProgressBar {{
+              border: 1px solid {UI.BORDER_CONTROL};
+              border-radius: 9px; background-color: #111E35; min-height: 18px;
+            }}
+            QProgressBar::chunk {{
               border-radius: 8px;
-              background-color: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1FD0B2, stop:1 #2E7BFF
-              );
-            }
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {UI.ACCENT_ALT}, stop:1 {UI.ACCENT});
+            }}
             """
         )
 

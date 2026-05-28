@@ -76,7 +76,19 @@ else
 fi
 
 cd "${ROOT_DIR}"
-python3 -m PyInstaller "${PYI_ARGS[@]}" "${ENTRYPOINT}"
+PYTHON_BIN=""
+if [[ -x "${ROOT_DIR}/.uvenv/bin/python" ]]; then
+  PYTHON_BIN="${ROOT_DIR}/.uvenv/bin/python"
+elif [[ -x "${ROOT_DIR}/.venv313/bin/python" ]]; then
+  PYTHON_BIN="${ROOT_DIR}/.venv313/bin/python"
+elif [[ -x "${ROOT_DIR}/.venv312/bin/python" ]]; then
+  PYTHON_BIN="${ROOT_DIR}/.venv312/bin/python"
+else
+  PYTHON_BIN="python3"
+fi
+
+echo "Using Python: ${PYTHON_BIN}"
+"${PYTHON_BIN}" -m PyInstaller "${PYI_ARGS[@]}" "${ENTRYPOINT}"
 
 echo
 echo "Build complete:"
