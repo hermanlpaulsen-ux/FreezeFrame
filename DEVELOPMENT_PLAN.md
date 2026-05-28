@@ -195,6 +195,14 @@ Deliverables:
   - Exact `nb_frames` when available
   - `ffprobe -count_frames`/`-count_packets` fallbacks
   - Duration*FPS estimate fallback with confidence labeling.
+- Responsive exact-frame preview pipeline:
+  - Preview runs in worker thread (no UI blocking)
+  - Stale preview requests are cancelled while scrubbing
+  - Per-frame preview cache for instant back/forward reuse
+  - Fast seek strategies before exact fallback (`CFR preroll` -> `timestamp seek` -> `exact global frame`)
+- Faster later-frame export path:
+  - Export uses fast-seek strategies first for speed on high frame numbers
+  - Exact global-frame extraction remains final fallback for robustness
 
 Acceptance criteria:
 

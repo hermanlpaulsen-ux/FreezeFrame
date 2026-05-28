@@ -79,6 +79,7 @@ class FrameExportWorker(QThread):
         self.frame_number = max(1, frame_number)
         self._stop_requested = False
         self._active_process: subprocess.Popen | None = None
+        self._timing_cache: dict[str, tuple[float, bool]] = {}
 
     def request_stop(self) -> None:
         self._stop_requested = True
@@ -237,7 +238,77 @@ class FrameExportWorker(QThread):
         except Exception:
             return 0.0
 
-    def _build_export_command(self, source: Path, target: Path, ext: str) -> list[str]:
+    def _parse_fps(self, value: str) -> float:
+        if not value or value == "N/A":
+            return 0.0
+        if "/" in value:
+            try:
+                num, den = value.split("/", 1)
+                den_val = float(den)
+                if den_val == 0:
+                    return 0.0
+                fps = float(num) / den_val
+                return fps if fps > 0 else 0.0
+            except Exception:
+                return 0.0
+        try:
+            fps = float(value)
+            return fps if fps > 0 else 0.0
+        except Exception:
+            return 0.0
+
+    def _source_timing(self, source: Path) -> tuple[float, bool]:
+        key = str(source.resolve())
+        if key in self._timing_cache:
+            return self._timing_cache[key]
+        ffprobe = self.ffprobe
+        if not Path(ffprobe).is_file():
+            self._timing_cache[key] = (0.0, False)
+            return self._timing_cache[key]
+        probe = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "default=nw=1:nk=1",
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            fps = self._probe_fps(source)
+            self._timing_cache[key] = (fps, False)
+            return self._timing_cache[key]
+        lines = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+        avg_fps = self._parse_fps(lines[0]) if len(lines) > 0 else 0.0
+        real_fps = self._parse_fps(lines[1]) if len(lines) > 1 else 0.0
+        fps = avg_fps or real_fps
+        is_vfr = avg_fps > 0 and real_fps > 0 and abs(avg_fps - real_fps) > 0.01
+        self._timing_cache[key] = (fps, is_vfr)
+        return self._timing_cache[key]
+
+    def _build_export_tail(self, ext: str, target: Path) -> list[str]:
+        tail: list[str] = []
+        if ext == "jpg":
+            jpeg_quality_map = {"High": "2", "Balanced": "5", "Small": "9"}
+            tail.extend(["-q:v", jpeg_quality_map.get(self.quality_preset, "5")])
+        elif ext == "png":
+            png_compression_map = {"High": "2", "Balanced": "5", "Small": "9"}
+            tail.extend(["-compression_level", png_compression_map.get(self.quality_preset, "5")])
+        elif ext == "tiff":
+            tiff_compression_map = {"High": "lzw", "Balanced": "deflate", "Small": "zlib"}
+            tail.extend(["-compression_algo", tiff_compression_map.get(self.quality_preset, "deflate")])
+        tail.append(str(target))
+        return tail
+
+    def _build_export_commands(self, source: Path, target: Path, ext: str) -> list[list[str]]:
         if ext == "tiff":
             source_supports_16_bit = self._source_supports_16_bit(source)
             use_tiff_16_bit = self.tiff_bit_depth.startswith("16-bit") and source_supports_16_bit
@@ -248,7 +319,10 @@ class FrameExportWorker(QThread):
             output_format = "yuvj420p"
 
         frame_idx_zero_based = max(0, self.frame_number - 1)
-        cmd = [
+        fps, is_vfr = self._source_timing(source)
+        tail = self._build_export_tail(ext, target)
+
+        exact_cmd = [
             self.ffmpeg,
             "-y",
             "-hwaccel",
@@ -260,17 +334,57 @@ class FrameExportWorker(QThread):
             "-vframes",
             "1",
         ]
-        if ext == "jpg":
-            jpeg_quality_map = {"High": "2", "Balanced": "5", "Small": "9"}
-            cmd.extend(["-q:v", jpeg_quality_map.get(self.quality_preset, "5")])
-        elif ext == "png":
-            png_compression_map = {"High": "2", "Balanced": "5", "Small": "9"}
-            cmd.extend(["-compression_level", png_compression_map.get(self.quality_preset, "5")])
-        elif ext == "tiff":
-            tiff_compression_map = {"High": "lzw", "Balanced": "deflate", "Small": "zlib"}
-            cmd.extend(["-compression_algo", tiff_compression_map.get(self.quality_preset, "deflate")])
-        cmd.append(str(target))
-        return cmd
+        exact_cmd.extend(tail)
+
+        cmds: list[list[str]] = []
+        if fps > 0 and not is_vfr:
+            target_seconds = max(0.0, frame_idx_zero_based / fps)
+            preroll_seconds = 2.0
+            seek_seconds = max(0.0, target_seconds - preroll_seconds)
+            local_frame = max(0, int(round((target_seconds - seek_seconds) * fps)))
+            cfr_cmd = [
+                self.ffmpeg,
+                "-y",
+                "-hwaccel",
+                "none",
+                "-ss",
+                f"{seek_seconds:.6f}",
+                "-i",
+                str(source),
+                "-vf",
+                f"select=eq(n\\,{local_frame}),format={output_format}",
+                "-vframes",
+                "1",
+            ]
+            cfr_cmd.extend(tail)
+            cmds.append(cfr_cmd)
+        if fps > 0:
+            target_seconds = max(0.0, frame_idx_zero_based / fps)
+            ts_cmd = [
+                self.ffmpeg,
+                "-y",
+                "-hwaccel",
+                "none",
+                "-ss",
+                f"{target_seconds:.6f}",
+                "-i",
+                str(source),
+                "-vframes",
+                "1",
+                "-vf",
+                f"format={output_format}",
+            ]
+            ts_cmd.extend(tail)
+            cmds.append(ts_cmd)
+        cmds.append(exact_cmd)
+        return cmds
+
+    def _run_cmd(self, cmd: list[str]) -> int:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._active_process = proc
+        rc = proc.wait()
+        self._active_process = None
+        return rc
 
     def run(self) -> None:
         total = len(self.files) * len(self.selected_formats)
@@ -285,11 +399,11 @@ class FrameExportWorker(QThread):
                     break
                 preset_suffix = self.quality_preset.strip().lower().replace(" ", "-")
                 target = self.output_dir / folder_name / f"{file.stem}_{preset_suffix}.{ext}"
-                cmd = self._build_export_command(file, target, ext)
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self._active_process = proc
-                rc = proc.wait()
-                self._active_process = None
+                rc = 1
+                for cmd in self._build_export_commands(file, target, ext):
+                    rc = self._run_cmd(cmd)
+                    if rc == 0 and target.is_file():
+                        break
 
                 if self._stop_requested:
                     break
@@ -319,6 +433,8 @@ class PreviewWorker(QThread):
         source: Path,
         frame_number: int,
         output_path: Path,
+        fps: float = 0.0,
+        is_variable_frame_rate: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -327,6 +443,8 @@ class PreviewWorker(QThread):
         self.source = source
         self.frame_number = max(1, frame_number)
         self.output_path = output_path
+        self.fps = fps if fps and fps > 0 else 0.0
+        self.is_variable_frame_rate = is_variable_frame_rate
         self._stop_requested = False
         self._active_process: subprocess.Popen | None = None
         self.timeout_seconds = 20
@@ -339,9 +457,27 @@ class PreviewWorker(QThread):
             except Exception:
                 pass
 
-    def run(self) -> None:
+    def _run_preview_command(self, cmd: list[str]) -> bool:
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._active_process = proc
+            rc = proc.wait(timeout=self.timeout_seconds)
+            self._active_process = None
+        except subprocess.TimeoutExpired:
+            self.request_stop()
+            return False
+        except Exception:
+            self._active_process = None
+            return False
+
+        if self._stop_requested:
+            return False
+
+        return rc == 0 and self.output_path.is_file()
+
+    def _build_exact_global_frame_cmd(self) -> list[str]:
         zero_based_frame = self.frame_number - 1
-        cmd = [
+        return [
             self.ffmpeg,
             "-y",
             "-hide_banner",
@@ -363,26 +499,98 @@ class PreviewWorker(QThread):
             str(self.output_path),
         ]
 
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self._active_process = proc
-            rc = proc.wait(timeout=self.timeout_seconds)
-            self._active_process = None
-        except subprocess.TimeoutExpired:
-            self.request_stop()
-            self.failed.emit(self.request_id, self.frame_number, "Preview timed out")
-            return
-        except Exception as exc:
-            self.failed.emit(self.request_id, self.frame_number, str(exc))
-            return
+    def _build_direct_timestamp_seek_cmd(self) -> list[str] | None:
+        if self.fps <= 0:
+            return None
+        zero_based_frame = self.frame_number - 1
+        target_seconds = max(0.0, zero_based_frame / self.fps)
+        return [
+            self.ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-hwaccel",
+            "none",
+            "-ss",
+            f"{target_seconds:.6f}",
+            "-i",
+            str(self.source),
+            "-an",
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=640:-2:flags=fast_bilinear,format=yuvj420p",
+            "-q:v",
+            "10",
+            str(self.output_path),
+        ]
 
-        if self._stop_requested:
-            return
+    def _build_cfr_seek_preroll_cmd(self) -> list[str] | None:
+        if self.fps <= 0 or self.is_variable_frame_rate:
+            return None
+        zero_based_frame = self.frame_number - 1
+        target_seconds = max(0.0, zero_based_frame / self.fps)
+        preroll_seconds = 2.0
+        seek_seconds = max(0.0, target_seconds - preroll_seconds)
+        local_frame = max(0, int(round((target_seconds - seek_seconds) * self.fps)))
+        return [
+            self.ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-hwaccel",
+            "none",
+            "-ss",
+            f"{seek_seconds:.6f}",
+            "-i",
+            str(self.source),
+            "-an",
+            "-vsync",
+            "0",
+            "-vf",
+            f"select=eq(n\\,{local_frame}),scale=640:-2:flags=fast_bilinear,format=yuvj420p",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "10",
+            str(self.output_path),
+        ]
 
-        if rc == 0 and self.output_path.is_file():
-            self.finished_with_preview.emit(self.request_id, self.frame_number, str(self.output_path))
-        else:
-            self.failed.emit(self.request_id, self.frame_number, "Preview unavailable")
+    def run(self) -> None:
+        strategies: list[tuple[str, list[str]]] = []
+        cfr_preroll = self._build_cfr_seek_preroll_cmd()
+        if cfr_preroll is not None:
+            strategies.append(("cfr_seek_preroll", cfr_preroll))
+        direct_seek = self._build_direct_timestamp_seek_cmd()
+        if direct_seek is not None:
+            strategies.append(("direct_timestamp_seek", direct_seek))
+        strategies.append(("exact_global_frame", self._build_exact_global_frame_cmd()))
+
+        for strategy_name, cmd in strategies:
+            if self._stop_requested:
+                return
+            try:
+                if self.output_path.is_file():
+                    self.output_path.unlink()
+            except Exception:
+                pass
+            logger.debug(
+                "Preview strategy attempted: %s frame=%s fps=%.3f vfr=%s",
+                strategy_name,
+                self.frame_number,
+                self.fps,
+                self.is_variable_frame_rate,
+            )
+            if self._run_preview_command(cmd):
+                logger.debug("Preview strategy succeeded: %s frame=%s", strategy_name, self.frame_number)
+                self.finished_with_preview.emit(self.request_id, self.frame_number, str(self.output_path))
+                return
+            logger.debug("Preview strategy failed: %s frame=%s", strategy_name, self.frame_number)
+
+        if not self._stop_requested:
+            self.failed.emit(self.request_id, self.frame_number, "Preview unavailable after fast seek and exact fallback")
 
 
 class FreezeFrameWindow(QMainWindow):
@@ -406,6 +614,7 @@ class FreezeFrameWindow(QMainWindow):
         self.preview_cache_order: list[tuple[str, int]] = []
         self.max_preview_cache_items = 80
         self.is_scrubbing = False
+        self.current_frame_result: FrameCountResult | None = None
 
         self._build_ui()
         self._apply_style()
@@ -1424,6 +1633,7 @@ class FreezeFrameWindow(QMainWindow):
         self.batch_preview.setText("Generating preview...")
         self.batch_preview.setPixmap(QPixmap())
         frame_result = self._resolve_frame_count(source)
+        self.current_frame_result = frame_result
         max_frame = max(2, frame_result.frame_count)
         self.frame_slider.setEnabled(True)
         self.frame_index_spin.setEnabled(True)
@@ -1453,6 +1663,7 @@ class FreezeFrameWindow(QMainWindow):
         self.frame_index_spin.blockSignals(False)
         self.frame_slider.setEnabled(False)
         self.frame_index_spin.setEnabled(False)
+        self.current_frame_result = None
         self.frame_count_info.setText("Frames: unknown")
         self.batch_preview.setPixmap(QPixmap())
         self.batch_preview.setText("Preview not available in batch processing")
@@ -1473,6 +1684,7 @@ class FreezeFrameWindow(QMainWindow):
         self.preview_image.setPixmap(QPixmap())
         self.preview_image.setText("Generating preview...")
         frame_result = self._resolve_frame_count(p)
+        self.current_frame_result = frame_result
         max_frame = max(2, frame_result.frame_count)
         self.frame_slider.setRange(1, max_frame)
         self.frame_index_spin.setRange(1, max_frame)
@@ -1724,10 +1936,9 @@ class FreezeFrameWindow(QMainWindow):
                 QMessageBox.warning(self, "Unsupported input file", "Selected file is not a supported video format.")
                 return
             files = [input_path]
-            frame_number = self.frame_index_spin.value()
         else:
             files = self._collect_files(input_path)
-            frame_number = 1
+        frame_number = self.frame_index_spin.value()
         if not files:
             QMessageBox.warning(self, "No video files", "No supported video files found in input.")
             return
@@ -1945,6 +2156,8 @@ class FreezeFrameWindow(QMainWindow):
             source=source,
             frame_number=frame_index,
             output_path=preview_path,
+            fps=self.current_frame_result.fps if self.current_frame_result else 0.0,
+            is_variable_frame_rate=self.current_frame_result.is_variable_frame_rate if self.current_frame_result else False,
             parent=self,
         )
         self.preview_worker.finished_with_preview.connect(
