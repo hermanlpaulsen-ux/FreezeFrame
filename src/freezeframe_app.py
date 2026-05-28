@@ -54,7 +54,7 @@ class FrameCountResult:
 
 class FrameExportWorker(QThread):
     progress_updated = Signal(int, int, int)
-    finished_with_result = Signal(int, int, str, list, bool)
+    finished_with_result = Signal(int, int, str, list, list, bool)
 
     def __init__(
         self,
@@ -390,10 +390,19 @@ class FrameExportWorker(QThread):
         total = len(self.files) * len(self.selected_formats)
         completed = 0
         failed: list[str] = []
+        skipped: list[str] = []
 
         for file in self.files:
             if self._stop_requested:
                 break
+            if self.frame_number > 1:
+                file_total_frames = self._probe_frame_count(file)
+                if file_total_frames > 1 and file_total_frames < self.frame_number:
+                    skipped.append(file.name)
+                    completed += len(self.selected_formats)
+                    pct = int((completed / total) * 100) if total else 0
+                    self.progress_updated.emit(completed, total, pct)
+                    continue
             for ext, folder_name in self.selected_formats:
                 if self._stop_requested:
                     break
@@ -418,6 +427,7 @@ class FrameExportWorker(QThread):
             completed,
             str(self.output_dir),
             failed,
+            skipped,
             self._stop_requested,
         )
 
@@ -808,17 +818,20 @@ class FreezeFrameWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("AppRoot")
         self.setCentralWidget(central)
         shell_layout = QVBoxLayout(central)
         shell_layout.setContentsMargins(0, 0, 0, 0)
         shell_layout.setSpacing(0)
 
         scroll = QScrollArea()
+        scroll.setObjectName("AppScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         shell_layout.addWidget(scroll)
 
         content = QWidget()
+        content.setObjectName("AppCanvas")
         scroll.setWidget(content)
 
         self.root_layout = QVBoxLayout(content)
@@ -891,10 +904,10 @@ class FreezeFrameWindow(QMainWindow):
         self.root_layout.addWidget(self.batch_io_card)
 
         self.format_card = self._make_card()
-        format_layout = QVBoxLayout(self.format_card)
-        format_layout.setContentsMargins(24, 20, 24, 20)
-        format_layout.setSpacing(12)
-        format_title = QLabel("Output Formats")
+        self.format_layout = QVBoxLayout(self.format_card)
+        self.format_layout.setContentsMargins(24, 20, 24, 20)
+        self.format_layout.setSpacing(12)
+        format_title = QLabel("Options")
         format_title.setObjectName("SectionTitle")
         format_desc = QLabel("Choose one or more formats. Files are saved to format subfolders (JPEG/PNG/TIFF).")
         format_desc.setObjectName("SectionDesc")
@@ -932,9 +945,9 @@ class FreezeFrameWindow(QMainWindow):
         format_row.addWidget(quality_label)
         format_row.addWidget(self.preset_combo)
 
-        format_layout.addWidget(format_title)
-        format_layout.addWidget(format_desc)
-        format_layout.addLayout(format_row)
+        self.format_layout.addWidget(format_title)
+        self.format_layout.addWidget(format_desc)
+        self.format_layout.addLayout(format_row)
         self.root_layout.addWidget(self.format_card)
         self._update_tiff_controls_visibility()
 
@@ -1013,11 +1026,8 @@ class FreezeFrameWindow(QMainWindow):
         return card
 
     def _build_unified_advanced_controls(self) -> None:
-        card = self._make_card()
-        box = QVBoxLayout(card)
-        box.setContentsMargins(22, 18, 22, 18)
-        box.setSpacing(12)
-        box.addWidget(self._label("File Options", "SectionTitle"))
+        box = self.format_layout
+        box.addSpacing(8)
         box.addWidget(self._label("Single-file settings are available here when processing a selected file.", "SectionDesc"))
 
         row_a = QGridLayout()
@@ -1083,7 +1093,7 @@ class FreezeFrameWindow(QMainWindow):
         self.preview_timer.timeout.connect(self.generate_preview)
         self._update_custom_height_visibility()
 
-        self.root_layout.insertWidget(3, card)
+        # File options are now consolidated into the same "Options" segment.
 
     def _build_tab_header(self, layout: QVBoxLayout, active_index: int) -> None:
         header_card = self._make_card()
@@ -1357,7 +1367,10 @@ class FreezeFrameWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-              background-color: #0A0F1A;
+              background-color: #102635;
+            }
+            #AppRoot, #AppCanvas, #AppScroll, #AppScroll > QWidget, QScrollArea {
+              background-color: #102635;
             }
             QTabWidget::pane {
               border: 1px solid #1F2A44;
@@ -1655,16 +1668,16 @@ class FreezeFrameWindow(QMainWindow):
         self._set_input_path(selected)
         self.frame_slider.blockSignals(True)
         self.frame_index_spin.blockSignals(True)
-        self.frame_slider.setRange(1, 1)
-        self.frame_index_spin.setRange(1, 1)
+        self.frame_slider.setRange(1, 1000)
+        self.frame_index_spin.setRange(1, 1000)
         self.frame_slider.setValue(1)
         self.frame_index_spin.setValue(1)
         self.frame_slider.blockSignals(False)
         self.frame_index_spin.blockSignals(False)
-        self.frame_slider.setEnabled(False)
-        self.frame_index_spin.setEnabled(False)
+        self.frame_slider.setEnabled(True)
+        self.frame_index_spin.setEnabled(True)
         self.current_frame_result = None
-        self.frame_count_info.setText("Frames: unknown")
+        self.frame_count_info.setText("Frames: batch mode (1-1000)")
         self.batch_preview.setPixmap(QPixmap())
         self.batch_preview.setText("Preview not available in batch processing")
 
@@ -1975,7 +1988,7 @@ class FreezeFrameWindow(QMainWindow):
         self.progress_pct.setText(f"{pct}%")
         self.status_label.setText(f"Processing {completed}/{total}...")
 
-    def _on_finished(self, total: int, completed: int, output_dir: str, failed: list, cancelled: bool) -> None:
+    def _on_finished(self, total: int, completed: int, output_dir: str, failed: list, skipped: list, cancelled: bool) -> None:
         self.is_processing = False
         self.worker = None
         self.last_output_dir = output_dir
@@ -1999,9 +2012,19 @@ class FreezeFrameWindow(QMainWindow):
         show_open = bool(output_path and output_path.is_dir())
         self.open_output_button.setVisible(show_open)
 
-        if failed:
-            self.status_label.setText(f"Done with errors. Exported {completed - len(failed)}/{total} files.")
-            QMessageBox.warning(self, "Completed with errors", f"{len(failed)} file(s) failed:\n" + "\n".join(failed[:15]))
+        if failed or skipped:
+            exported_ok = max(0, completed - len(failed) - (len(skipped) * len(self._selected_formats())))
+            self.status_label.setText(
+                f"Done with issues. Exported {exported_ok}/{total} files. Skipped files: {len(skipped)}."
+            )
+            message = []
+            if failed:
+                message.append(f"{len(failed)} export job(s) failed.")
+                message.append("\n".join(failed[:15]))
+            if skipped:
+                message.append(f"Skipped files: {len(skipped)}")
+                message.append("\n".join(skipped[:15]))
+            QMessageBox.warning(self, "Completed with issues", "\n\n".join(message))
             return
         self.status_label.setText(f"Done. Exported {completed} image file(s).")
         QMessageBox.information(self, "Completed", f"Exported {completed} image file(s) to:\n{output_dir}")
@@ -2087,7 +2110,7 @@ class FreezeFrameWindow(QMainWindow):
         self.single_progress_pct.setText(f"{pct}%")
         self.single_status_label.setText(f"Processing {completed}/{total}...")
 
-    def _on_single_finished(self, total: int, completed: int, output_dir: str, failed: list, cancelled: bool) -> None:
+    def _on_single_finished(self, total: int, completed: int, output_dir: str, failed: list, skipped: list, cancelled: bool) -> None:
         self.is_single_processing = False
         self.single_worker = None
         self.single_start_button.setEnabled(True)
@@ -2099,9 +2122,10 @@ class FreezeFrameWindow(QMainWindow):
             return
         self.single_progress_bar.setValue(100)
         self.single_progress_pct.setText("100%")
-        if failed:
+        if failed or skipped:
             self.single_status_label.setText("Done with errors.")
-            QMessageBox.warning(self, "Single-file export", f"{len(failed)} export(s) failed.")
+            skipped_note = f"\nSkipped files: {len(skipped)}" if skipped else ""
+            QMessageBox.warning(self, "Single-file export", f"{len(failed)} export(s) failed.{skipped_note}")
             return
         self.single_status_label.setText("Done. Exported single file.")
         QMessageBox.information(self, "Single-file export", f"Exported to:\n{output_dir}")
