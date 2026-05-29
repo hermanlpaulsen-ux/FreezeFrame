@@ -179,9 +179,9 @@ Deliverables:
   - `Add file` and `Add folder` on the same input row
   - Output folder picker (default `Stills` near source)
 - Output format controls (JPEG/PNG/TIFF) with per-run options.
-- Custom resolution scaling:
-  - `Auto` (source size)
-  - `Custom height` input with aspect-ratio preserving width.
+- Resolution scaling:
+  - `Original` (source size)
+  - Preset output heights (`2160`, `1080`, `720`) with aspect-ratio preserving width.
 - Custom bit depth controls for all selected formats:
   - 8-bit, 16-bit, 32-bit options
   - Capability-aware enablement based on source + codec support.
@@ -207,6 +207,7 @@ Deliverables:
 Acceptance criteria:
 
 - User can export a selected frame from a single file with format/quality/bit-depth/scale controls in one pass.
+- Batch and single-file processing use the same effective output settings model.
 - Quality level persists visually and maps consistently to actual export behavior.
 - Unsupported bit-depth choices are disabled or clearly explained.
 - Preview renders quickly and matches export frame choice.
@@ -238,6 +239,20 @@ Acceptance criteria:
 
 - Same project file/settings behave consistently across OSes.
 - Smoke-test suite passes on all three platforms.
+
+### Phase 6A Status Update (Completed)
+
+Completed implementation:
+
+- Linux packaging script added (`build_linux_app.sh`) with mandatory ffmpeg/ffprobe embedding.
+- Linux build now fails fast if either ffmpeg or ffprobe is missing at build time.
+- Open-folder action now uses platform-aware launch behavior:
+  - macOS: `open`
+  - Linux: `xdg-open` with sanitized environment to avoid Qt/PyInstaller library conflicts.
+- Linux smoke tests verified:
+  - App launch stability
+  - Embedded ffmpeg/ffprobe presence in bundle
+  - Frame export pipeline using bundled binaries.
 
 ## Suggested Issue Breakdown (Initial Backlog)
 

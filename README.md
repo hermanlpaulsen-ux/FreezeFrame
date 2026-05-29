@@ -38,10 +38,9 @@ Desktop app for extracting the first frame from video files and saving them as i
 
 ## Requirements
 
-- macOS
 - Python 3.11+ (tested with Python 3.14)
 - `pyinstaller`
-- Optional for bundling: `ffmpeg` installed locally (for example via Homebrew)
+- For packaging builds: local `ffmpeg` and `ffprobe` available on the build machine (both are embedded into distributable builds)
 
 ## Install dev dependencies
 
@@ -72,6 +71,21 @@ The build script tries to bundle ffmpeg from:
 - `$(command -v ffmpeg)`
 
 If no local ffmpeg is found, the app still builds and will use system PATH resolution at runtime.
+
+## Build Linux app
+
+```bash
+./build_linux_app.sh
+```
+
+Build output:
+
+- `dist/FreezeFrame/`
+
+Linux build behavior:
+
+- The build fails if either `ffmpeg` or `ffprobe` is missing on the build machine.
+- Both binaries are embedded into the app bundle so end users do not need to pre-install them.
 
 ## GitHub notes
 

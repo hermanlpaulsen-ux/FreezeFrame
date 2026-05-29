@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from platform_utils import open_in_file_manager
+
 
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mkv", ".avi"}
 logger = logging.getLogger("freezeframe")
@@ -125,6 +127,8 @@ class FrameExportWorker(QThread):
         selected_formats: list[tuple[str, str]],
         quality_preset: str,
         tiff_bit_depth: str,
+        quality_level: int | None = None,
+        resize_height: int | None = None,
         frame_number: int = 1,
         parent: QWidget | None = None,
     ) -> None:
@@ -136,6 +140,8 @@ class FrameExportWorker(QThread):
         self.selected_formats = selected_formats
         self.quality_preset = quality_preset
         self.tiff_bit_depth = tiff_bit_depth
+        self.quality_level = quality_level
+        self.resize_height = resize_height if resize_height and resize_height > 0 else None
         self.frame_number = max(1, frame_number)
         self._stop_requested = False
         self._active_process: subprocess.Popen | None = None
@@ -354,14 +360,28 @@ class FrameExportWorker(QThread):
         self._timing_cache[key] = (fps, is_vfr)
         return self._timing_cache[key]
 
+    def _effective_quality_level(self) -> int:
+        if self.quality_level is not None:
+            return max(1, min(12, int(self.quality_level)))
+        if self.quality_preset == "High":
+            return 12
+        if self.quality_preset == "Balanced":
+            return 7
+        return 3
+
     def _build_export_tail(self, ext: str, target: Path) -> list[str]:
         tail: list[str] = []
+        quality_level = self._effective_quality_level()
         if ext == "jpg":
-            jpeg_quality_map = {"High": "2", "Balanced": "5", "Small": "9"}
-            tail.extend(["-q:v", jpeg_quality_map.get(self.quality_preset, "5")])
+            # MJPEG: lower q is better quality and bigger files.
+            jpeg_q = int(round(31 - ((quality_level - 1) * (29 / 11))))
+            jpeg_q = max(2, min(31, jpeg_q))
+            tail.extend(["-q:v", str(jpeg_q)])
         elif ext == "png":
-            png_compression_map = {"High": "2", "Balanced": "5", "Small": "9"}
-            tail.extend(["-compression_level", png_compression_map.get(self.quality_preset, "5")])
+            # PNG compression is lossless; this tunes output size/time.
+            png_compression = int(round(9 - ((quality_level - 1) * (8 / 11))))
+            png_compression = max(1, min(9, png_compression))
+            tail.extend(["-compression_level", str(png_compression)])
         elif ext == "tiff":
             tiff_compression_map = {"High": "lzw", "Balanced": "deflate", "Small": "zlib"}
             tail.extend(["-compression_algo", tiff_compression_map.get(self.quality_preset, "deflate")])
@@ -369,12 +389,13 @@ class FrameExportWorker(QThread):
         return tail
 
     def _build_export_commands(self, source: Path, target: Path, ext: str) -> list[list[str]]:
+        supports_16_bit = self._source_supports_16_bit(source)
+        request_16_bit = self.tiff_bit_depth.startswith("16-bit")
         if ext == "tiff":
-            source_supports_16_bit = self._source_supports_16_bit(source)
-            use_tiff_16_bit = self.tiff_bit_depth.startswith("16-bit") and source_supports_16_bit
+            use_tiff_16_bit = request_16_bit and supports_16_bit
             output_format = "rgb48le" if use_tiff_16_bit else "rgb24"
         elif ext == "png":
-            output_format = "rgb24"
+            output_format = "rgb48le" if (request_16_bit and supports_16_bit) else "rgb24"
         else:
             output_format = "yuvj420p"
 
@@ -382,6 +403,7 @@ class FrameExportWorker(QThread):
         fps, is_vfr = self._source_timing(source)
         tail = self._build_export_tail(ext, target)
 
+        scale_expr = f",scale=-2:{self.resize_height}:flags=lanczos" if self.resize_height else ""
         exact_cmd = [
             self.ffmpeg,
             "-y",
@@ -390,7 +412,7 @@ class FrameExportWorker(QThread):
             "-i",
             str(source),
             "-vf",
-            f"select=eq(n\\,{frame_idx_zero_based}),format={output_format}",
+            f"select=eq(n\\,{frame_idx_zero_based}){scale_expr},format={output_format}",
             "-vframes",
             "1",
         ]
@@ -412,7 +434,7 @@ class FrameExportWorker(QThread):
                 "-i",
                 str(source),
                 "-vf",
-                f"select=eq(n\\,{local_frame}),format={output_format}",
+                f"select=eq(n\\,{local_frame}){scale_expr},format={output_format}",
                 "-vframes",
                 "1",
             ]
@@ -432,7 +454,7 @@ class FrameExportWorker(QThread):
                 "-vframes",
                 "1",
                 "-vf",
-                f"format={output_format}",
+                f"{'scale=-2:' + str(self.resize_height) + ':flags=lanczos,' if self.resize_height else ''}format={output_format}",
             ]
             ts_cmd.extend(tail)
             cmds.append(ts_cmd)
@@ -445,6 +467,14 @@ class FrameExportWorker(QThread):
         rc = proc.wait()
         self._active_process = None
         return rc
+
+    def _output_variant_suffix(self) -> str:
+        quality_tag = f"q{self._effective_quality_level():02d}"
+        resolution_tag = f"h{self.resize_height}" if self.resize_height else "orig"
+        bit_depth_raw = self.tiff_bit_depth.strip().split("-", 1)[0]
+        bit_depth_digits = "".join(ch for ch in bit_depth_raw if ch.isdigit()) or "8"
+        bit_depth_tag = f"bd{bit_depth_digits}"
+        return f"{quality_tag}_{resolution_tag}_{bit_depth_tag}"
 
     def run(self) -> None:
         total = len(self.files) * len(self.selected_formats)
@@ -466,8 +496,8 @@ class FrameExportWorker(QThread):
             for ext, folder_name in self.selected_formats:
                 if self._stop_requested:
                     break
-                preset_suffix = self.quality_preset.strip().lower().replace(" ", "-")
-                target = self.output_dir / folder_name / f"{file.stem}_{preset_suffix}.{ext}"
+                variant_suffix = self._output_variant_suffix()
+                target = self.output_dir / folder_name / f"{file.stem}_{variant_suffix}.{ext}"
                 rc = 1
                 for cmd in self._build_export_commands(file, target, ext):
                     rc = self._run_cmd(cmd)
@@ -966,7 +996,6 @@ class FreezeFrameWindow(QMainWindow):
         self.jpeg_cb.setChecked(True)
         self.png_cb = QCheckBox("PNG")
         self.tiff_cb = QCheckBox("TIFF")
-        self.tiff_cb.stateChanged.connect(self._update_tiff_controls_visibility)
         for checkbox in (self.jpeg_cb, self.png_cb, self.tiff_cb):
             checkbox.setMinimumHeight(UI.HEIGHT_COMPACT)
             checkbox.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -974,29 +1003,11 @@ class FreezeFrameWindow(QMainWindow):
         format_row.addWidget(self.png_cb)
         format_row.addWidget(self.tiff_cb)
         format_row.addStretch(1)
-        self.tiff_label = QLabel("TIFF Bit Depth:")
-        self.tiff_label.setObjectName("InlineLabel")
-        self.tiff_combo = QComboBox()
-        self.tiff_combo.addItems(["8-bit", "16-bit (if supported)"])
-        self.tiff_combo.setFixedWidth(190)
-        self.tiff_combo.setObjectName("TiffCombo")
-        format_row.addWidget(self.tiff_label)
-        format_row.addWidget(self.tiff_combo)
-
-        quality_label = QLabel("Quality Preset:")
-        quality_label.setObjectName("InlineLabel")
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["High", "Balanced", "Small"])
-        self.preset_combo.setCurrentText("High")
-        self.preset_combo.setFixedWidth(150)
-        format_row.addWidget(quality_label)
-        format_row.addWidget(self.preset_combo)
 
         self.format_layout.addWidget(format_title)
         self.format_layout.addWidget(format_desc)
         self.format_layout.addLayout(format_row)
         self.root_layout.addWidget(self.format_card)
-        self._update_tiff_controls_visibility()
 
         self.action_card = self._make_card()
         action_layout = QVBoxLayout(self.action_card)
@@ -1112,23 +1123,15 @@ class FreezeFrameWindow(QMainWindow):
         self.single_bit_depth.addItems(["8-bit", "16-bit", "32-bit"])
         self.single_bit_depth.setFixedWidth(110)
         self.single_bit_depth.setCurrentIndex(0)
+        self._disable_unsupported_bit_depth_option(self.single_bit_depth)
         row_a.addWidget(self._label("Bit Depth:", "InlineLabel"), 0, 2)
         row_a.addWidget(self.single_bit_depth, 0, 3)
         self.single_res_preset = QComboBox()
-        self.single_res_preset.addItems(["Original", "2160", "1080", "720", "Custom"])
+        self.single_res_preset.addItems(["Original", "2160", "1080", "720"])
         self.single_res_preset.setFixedWidth(130)
-        self.single_res_preset.currentTextChanged.connect(self._update_custom_height_visibility)
         row_a.addWidget(self._label("Resolution:", "InlineLabel"), 0, 4)
         row_a.addWidget(self.single_res_preset, 0, 5)
-        self.custom_height_label = self._label("Custom Height:", "InlineLabel")
-        self.custom_height = QSpinBox()
-        self.custom_height.setRange(64, 8192)
-        self.custom_height.setSingleStep(2)
-        self.custom_height.setValue(1080)
-        self.custom_height.setFixedWidth(120)
-        row_a.addWidget(self.custom_height_label, 0, 6)
-        row_a.addWidget(self.custom_height, 0, 7)
-        row_a.setColumnStretch(8, 1)
+        row_a.setColumnStretch(6, 1)
         box.addLayout(row_a)
 
         row_b = QHBoxLayout()
@@ -1160,7 +1163,7 @@ class FreezeFrameWindow(QMainWindow):
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(120)
         self.preview_timer.timeout.connect(self.generate_preview)
-        self._update_custom_height_visibility()
+        
 
         # File options are now consolidated into the same "Options" segment.
 
@@ -1289,20 +1292,10 @@ class FreezeFrameWindow(QMainWindow):
         row1.addWidget(self.single_quality)
 
         self.single_res_preset = QComboBox()
-        self.single_res_preset.addItems(["Original", "2160", "1080", "720", "Custom"])
-        self.single_res_preset.currentTextChanged.connect(self._update_custom_height_visibility)
+        self.single_res_preset.addItems(["Original", "2160", "1080", "720"])
         self.single_res_preset.setFixedWidth(130)
         row1.addWidget(self._label("Resolution:", "InlineLabel"))
         row1.addWidget(self.single_res_preset)
-
-        self.custom_height = QSpinBox()
-        self.custom_height.setRange(64, 8192)
-        self.custom_height.setSingleStep(2)
-        self.custom_height.setValue(1080)
-        self.custom_height.setFixedWidth(120)
-        self.custom_height_label = self._label("Custom Height:", "InlineLabel")
-        row1.addWidget(self.custom_height_label)
-        row1.addWidget(self.custom_height)
         row1.addStretch(1)
         opts.addLayout(row1)
 
@@ -1393,7 +1386,7 @@ class FreezeFrameWindow(QMainWindow):
         layout.addLayout(top_split)
         layout.addWidget(self.single_action_card)
 
-        self._update_custom_height_visibility()
+        
 
     def _label(self, text: str, object_name: str) -> QLabel:
         lbl = QLabel(text)
@@ -1730,14 +1723,16 @@ class FreezeFrameWindow(QMainWindow):
             return
         self.single_output_path.setText(str(Path(selected)))
 
-    def _update_custom_height_visibility(self) -> None:
-        show = self.single_res_preset.currentText() == "Custom"
-        self.custom_height_label.setVisible(show)
-        self.custom_height.setVisible(show)
+    def _disable_unsupported_bit_depth_option(self, combo: QComboBox) -> None:
+        model = combo.model()
+        item32 = model.item(2)
+        if item32 is not None:
+            item32.setEnabled(False)
+            item32.setForeground(Qt.GlobalColor.gray)
 
     def _update_single_bit_depth_support(self) -> None:
-        path_text = self.input_path_label.text().strip()
-        if not path_text or path_text == "No folder selected":
+        path_text = self.single_file_path.text().strip()
+        if not path_text or path_text == "No file selected":
             return
         source = Path(path_text)
         if not source.is_file():
@@ -1916,8 +1911,8 @@ class FreezeFrameWindow(QMainWindow):
 
     def _update_tiff_controls_visibility(self) -> None:
         visible = self.tiff_cb.isChecked()
-        self.tiff_label.setVisible(visible)
-        self.tiff_combo.setVisible(visible)
+        # Kept for backward compatibility with previous UI wiring.
+        return
 
     def start_processing(self) -> None:
         if self.is_processing:
@@ -1982,8 +1977,10 @@ class FreezeFrameWindow(QMainWindow):
             files=files,
             output_dir=output_dir,
             selected_formats=selected_formats,
-            quality_preset=self.preset_combo.currentText(),
-            tiff_bit_depth=self.tiff_combo.currentText(),
+            quality_preset=self._map_quality_1_12_to_preset(self.single_quality.value()),
+            tiff_bit_depth=self.single_bit_depth.currentText(),
+            quality_level=self.single_quality.value(),
+            resize_height=self._resolution_to_height(self.single_res_preset.currentText()),
             frame_number=frame_number,
             parent=self,
         )
@@ -2040,7 +2037,7 @@ class FreezeFrameWindow(QMainWindow):
     def open_output_folder(self) -> None:
         path = self.last_output_dir or self.output_path_label.text().strip()
         if path and path != "No folder selected" and Path(path).is_dir():
-            subprocess.run(["open", path], check=False)
+            open_in_file_manager(path)
 
     def stop_processing(self) -> None:
         if not self.is_processing or not self.worker:
@@ -2083,6 +2080,7 @@ class FreezeFrameWindow(QMainWindow):
 
         preset = self._map_quality_1_12_to_preset(self.single_quality.value())
         tiff_depth = self.single_bit_depth.currentText()
+        resize_height = self._resolution_to_height(self.single_res_preset.currentText())
 
         self.is_single_processing = True
         self.single_start_button.setEnabled(False)
@@ -2099,6 +2097,8 @@ class FreezeFrameWindow(QMainWindow):
             selected_formats=selected_formats,
             quality_preset=preset,
             tiff_bit_depth=tiff_depth,
+            quality_level=self.single_quality.value(),
+            resize_height=resize_height,
             frame_number=self.frame_index_spin.value(),
             parent=self,
         )
@@ -2112,6 +2112,14 @@ class FreezeFrameWindow(QMainWindow):
         if value >= 5:
             return "Balanced"
         return "Small"
+
+    def _resolution_to_height(self, value: str) -> int | None:
+        if value == "Original":
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
 
     def _on_single_progress(self, completed: int, total: int, pct: int) -> None:
         self.single_progress_bar.setValue(pct)
