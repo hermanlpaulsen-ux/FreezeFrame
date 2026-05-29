@@ -192,53 +192,70 @@ class FrameExportWorker(QThread):
         return False
 
     def _probe_frame_count(self, source: Path) -> int:
+        return self._resolve_frame_count(source).frame_count
+
+    def _probe_stream_field(self, source: Path, field: str, extra_args: list[str] | None = None) -> str:
         ffprobe = self.ffprobe
         if not Path(ffprobe).is_file():
-            return 1
-        probe = subprocess.run(
+            return ""
+        cmd = [ffprobe, "-v", "error"]
+        if extra_args:
+            cmd.extend(extra_args)
+        cmd.extend(
             [
-                ffprobe,
-                "-v",
-                "error",
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=nb_frames,r_frame_rate,duration",
+                f"stream={field}",
                 "-of",
                 "default=nw=1:nk=1",
                 str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
+            ]
         )
+        probe = subprocess.run(cmd, check=False, capture_output=True, text=True)
         if probe.returncode != 0:
-            return 1
-        lines = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
-        nb_frames = 0
-        fps = 0.0
-        duration = 0.0
-        for line in lines:
-            if line.isdigit():
-                nb_frames = int(line)
-            elif "/" in line:
-                try:
-                    num, den = line.split("/", 1)
-                    den_val = float(den)
-                    if den_val != 0:
-                        fps = float(num) / den_val
-                except Exception:
-                    pass
-            else:
-                try:
-                    duration = float(line)
-                except Exception:
-                    pass
-        if nb_frames > 0:
-            return nb_frames
-        if fps > 0 and duration > 0:
-            return max(1, int(fps * duration))
-        return 1
+            return ""
+        return probe.stdout.strip().splitlines()[0].strip() if probe.stdout.strip() else ""
+
+    def _resolve_frame_count(self, source: Path) -> FrameCountResult:
+        ffprobe = self.ffprobe
+        if not Path(ffprobe).is_file():
+            return FrameCountResult(300, "fallback", "safe_default", 30.0, 0.0, False)
+
+        nb_frames_raw = self._probe_stream_field(source, "nb_frames")
+        avg_fps_raw = self._probe_stream_field(source, "avg_frame_rate")
+        real_fps_raw = self._probe_stream_field(source, "r_frame_rate")
+        duration_raw = self._probe_stream_field(source, "duration")
+
+        nb_frames = int(nb_frames_raw) if nb_frames_raw.isdigit() else 0
+        avg_fps = self._parse_fps(avg_fps_raw)
+        real_fps = self._parse_fps(real_fps_raw)
+        try:
+            duration = float(duration_raw) if duration_raw and duration_raw != "N/A" else 0.0
+        except Exception:
+            duration = 0.0
+        if duration <= 0:
+            duration = self._probe_duration_seconds(source)
+
+        fps_for_estimate = avg_fps or real_fps
+        is_vfr = avg_fps > 0 and real_fps > 0 and abs(avg_fps - real_fps) > 0.01
+
+        if nb_frames > 1:
+            return FrameCountResult(nb_frames, "exact", "ffprobe_nb_frames", fps_for_estimate, duration, is_vfr)
+
+        counted_raw = self._probe_stream_field(source, "nb_read_frames", ["-count_frames"])
+        if counted_raw.isdigit() and int(counted_raw) > 1:
+            return FrameCountResult(int(counted_raw), "counted", "ffprobe_nb_read_frames", fps_for_estimate, duration, is_vfr)
+
+        packet_raw = self._probe_stream_field(source, "nb_read_packets", ["-count_packets"])
+        if packet_raw.isdigit() and int(packet_raw) > 1:
+            return FrameCountResult(int(packet_raw), "counted", "ffprobe_nb_read_packets", fps_for_estimate, duration, is_vfr)
+
+        if duration > 0 and fps_for_estimate > 0:
+            estimate = max(2, int(round(duration * fps_for_estimate)))
+            return FrameCountResult(estimate, "estimated", "duration_times_fps", fps_for_estimate, duration, is_vfr)
+
+        return FrameCountResult(300, "fallback", "safe_default", 30.0, duration, is_vfr)
 
     def _probe_duration_seconds(self, source: Path) -> float:
         ffprobe = self.ffprobe
@@ -486,9 +503,10 @@ class FrameExportWorker(QThread):
             if self._stop_requested:
                 break
             if self.frame_number > 1:
-                file_total_frames = self._probe_frame_count(file)
-                if file_total_frames > 1 and file_total_frames < self.frame_number:
-                    skipped.append(file.name)
+                frame_result = self._resolve_frame_count(file)
+                file_total_frames = frame_result.frame_count
+                if frame_result.confidence in ("exact", "counted") and file_total_frames < self.frame_number:
+                    skipped.append(f"{file.name} (frame {self.frame_number} > {file_total_frames})")
                     completed += len(self.selected_formats)
                     pct = int((completed / total) * 100) if total else 0
                     self.progress_updated.emit(completed, total, pct)
@@ -1681,6 +1699,7 @@ class FreezeFrameWindow(QMainWindow):
         self.frame_count_info.setText("Frames: batch mode (1-1000)")
         self.batch_preview.setPixmap(QPixmap())
         self.batch_preview.setText("Preview not available in batch processing")
+        self.status_label.setText("Batch mode: selected frame # is applied to every file in this folder.")
 
     def choose_single_file(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
