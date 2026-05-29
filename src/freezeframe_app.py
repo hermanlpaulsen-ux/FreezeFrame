@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal, QTimer
@@ -37,81 +35,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.models import FrameCountResult, VIDEO_EXTENSIONS
+from core.resources import SPIN_DOWN_ICON, SPIN_UP_ICON, resource_path
+from ffmpeg.service import (
+    find_ffmpeg,
+    find_ffprobe,
+    parse_fps,
+    probe_duration_seconds,
+    probe_stream_field,
+    resolve_frame_count,
+    source_supports_16_bit,
+    source_timing,
+)
 from platform_utils import open_in_file_manager
+from ui.design_tokens import UI
 
 
-VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mkv", ".avi"}
 logger = logging.getLogger("freezeframe")
-
-
-def resource_path(relative_path: str) -> Path:
-    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    return base_dir / relative_path
-
-SPIN_UP_ICON = resource_path("assets/spin-up.svg").as_posix()
-SPIN_DOWN_ICON = resource_path("assets/spin-down.svg").as_posix()
-
-
-class UI:
-    # Spacing
-    SPACE_XS = 4
-    SPACE_SM = 8
-    SPACE_MD = 12
-    SPACE_LG = 16
-    SPACE_XL = 24
-    SPACE_XXL = 32
-    SPACE_SECTION = 48
-
-    # Radii
-    RADIUS_CONTROL = 10
-    RADIUS_CARD = 16
-    RADIUS_MEDIA = 20
-
-    # Heights
-    HEIGHT_COMPACT = 32
-    HEIGHT_CONTROL = 40
-    HEIGHT_PRIMARY = 44
-    HEIGHT_PREVIEW_MIN = 170
-
-    # Widths
-    PICKER_BUTTON_WIDTH = 116
-
-    # Typography
-    FONT_TITLE = 24
-    FONT_SECTION = 18
-    FONT_BODY = 13
-    FONT_SMALL = 12
-    FONT_BUTTON = 13
-
-    # Colors
-    BG_APP = "#143247"
-    BG_CARD = "#0E1624"
-    BG_CONTROL = "#122039"
-    BG_CONTROL_HOVER = "#1B3352"
-    BG_CONTROL_ACTIVE = "#152844"
-
-    BORDER_SUBTLE = "#1F2A44"
-    BORDER_CONTROL = "#2A3E5E"
-    BORDER_FOCUS = "#3A6AA8"
-
-    TEXT_PRIMARY = "#ECF2FF"
-    TEXT_SECONDARY = "#9DB0CC"
-    TEXT_MUTED = "#8CA0BE"
-
-    ACCENT = "#2E7BFF"
-    ACCENT_HOVER = "#3D8AFF"
-    ACCENT_ALT = "#1FD0B2"
-    SUCCESS = "#16A34A"
-
-
-@dataclass
-class FrameCountResult:
-    frame_count: int
-    confidence: str  # exact | counted | estimated | fallback
-    source: str
-    fps: float = 0.0
-    duration_seconds: float = 0.0
-    is_variable_frame_rate: bool = False
 
 
 class FrameExportWorker(QThread):
@@ -156,224 +96,32 @@ class FrameExportWorker(QThread):
                 pass
 
     def _source_supports_16_bit(self, source: Path) -> bool:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return False
-        probe = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=pix_fmt,bits_per_raw_sample",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
-            return False
-        lines = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
-        for line in lines:
-            if line.isdigit() and int(line) > 8:
-                return True
-        pix_fmt = lines[0] if lines else ""
-        if re.search(r"p(10|12|14|16)(le|be)?$", pix_fmt):
-            return True
-        if re.search(r"(rgb|bgr|gbr)p?(30|36|48|64)(le|be)?$", pix_fmt):
-            return True
-        if re.search(r"gray(10|12|14|16)(le|be)?$", pix_fmt):
-            return True
-        return False
+        return source_supports_16_bit(self.ffprobe, source)
 
     def _probe_frame_count(self, source: Path) -> int:
         return self._resolve_frame_count(source).frame_count
 
     def _probe_stream_field(self, source: Path, field: str, extra_args: list[str] | None = None) -> str:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return ""
-        cmd = [ffprobe, "-v", "error"]
-        if extra_args:
-            cmd.extend(extra_args)
-        cmd.extend(
-            [
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                f"stream={field}",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ]
-        )
-        probe = subprocess.run(cmd, check=False, capture_output=True, text=True)
-        if probe.returncode != 0:
-            return ""
-        return probe.stdout.strip().splitlines()[0].strip() if probe.stdout.strip() else ""
+        return probe_stream_field(self.ffprobe, source, field, extra_args)
 
     def _resolve_frame_count(self, source: Path) -> FrameCountResult:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return FrameCountResult(300, "fallback", "safe_default", 30.0, 0.0, False)
-
-        nb_frames_raw = self._probe_stream_field(source, "nb_frames")
-        avg_fps_raw = self._probe_stream_field(source, "avg_frame_rate")
-        real_fps_raw = self._probe_stream_field(source, "r_frame_rate")
-        duration_raw = self._probe_stream_field(source, "duration")
-
-        nb_frames = int(nb_frames_raw) if nb_frames_raw.isdigit() else 0
-        avg_fps = self._parse_fps(avg_fps_raw)
-        real_fps = self._parse_fps(real_fps_raw)
-        try:
-            duration = float(duration_raw) if duration_raw and duration_raw != "N/A" else 0.0
-        except Exception:
-            duration = 0.0
-        if duration <= 0:
-            duration = self._probe_duration_seconds(source)
-
-        fps_for_estimate = avg_fps or real_fps
-        is_vfr = avg_fps > 0 and real_fps > 0 and abs(avg_fps - real_fps) > 0.01
-
-        if nb_frames > 1:
-            return FrameCountResult(nb_frames, "exact", "ffprobe_nb_frames", fps_for_estimate, duration, is_vfr)
-
-        counted_raw = self._probe_stream_field(source, "nb_read_frames", ["-count_frames"])
-        if counted_raw.isdigit() and int(counted_raw) > 1:
-            return FrameCountResult(int(counted_raw), "counted", "ffprobe_nb_read_frames", fps_for_estimate, duration, is_vfr)
-
-        packet_raw = self._probe_stream_field(source, "nb_read_packets", ["-count_packets"])
-        if packet_raw.isdigit() and int(packet_raw) > 1:
-            return FrameCountResult(int(packet_raw), "counted", "ffprobe_nb_read_packets", fps_for_estimate, duration, is_vfr)
-
-        if duration > 0 and fps_for_estimate > 0:
-            estimate = max(2, int(round(duration * fps_for_estimate)))
-            return FrameCountResult(estimate, "estimated", "duration_times_fps", fps_for_estimate, duration, is_vfr)
-
-        return FrameCountResult(300, "fallback", "safe_default", 30.0, duration, is_vfr)
+        return resolve_frame_count(self.ffprobe, source)
 
     def _probe_duration_seconds(self, source: Path) -> float:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return 0.0
-        probe = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
-            return 0.0
-        line = probe.stdout.strip().splitlines()[0] if probe.stdout.strip() else ""
-        try:
-            return max(0.0, float(line))
-        except Exception:
-            return 0.0
+        return probe_duration_seconds(self.ffprobe, source)
 
     def _probe_fps(self, source: Path) -> float:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return 0.0
-        probe = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=r_frame_rate",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
-            return 0.0
-        line = probe.stdout.strip().splitlines()[0] if probe.stdout.strip() else ""
-        if "/" in line:
-            try:
-                num, den = line.split("/", 1)
-                den_val = float(den)
-                if den_val != 0:
-                    return float(num) / den_val
-            except Exception:
-                return 0.0
-        try:
-            return float(line)
-        except Exception:
-            return 0.0
+        fps_raw = self._probe_stream_field(source, "r_frame_rate")
+        return parse_fps(fps_raw)
 
     def _parse_fps(self, value: str) -> float:
-        if not value or value == "N/A":
-            return 0.0
-        if "/" in value:
-            try:
-                num, den = value.split("/", 1)
-                den_val = float(den)
-                if den_val == 0:
-                    return 0.0
-                fps = float(num) / den_val
-                return fps if fps > 0 else 0.0
-            except Exception:
-                return 0.0
-        try:
-            fps = float(value)
-            return fps if fps > 0 else 0.0
-        except Exception:
-            return 0.0
+        return parse_fps(value)
 
     def _source_timing(self, source: Path) -> tuple[float, bool]:
         key = str(source.resolve())
         if key in self._timing_cache:
             return self._timing_cache[key]
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            self._timing_cache[key] = (0.0, False)
-            return self._timing_cache[key]
-        probe = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=avg_frame_rate,r_frame_rate",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
-            fps = self._probe_fps(source)
-            self._timing_cache[key] = (fps, False)
-            return self._timing_cache[key]
-        lines = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
-        avg_fps = self._parse_fps(lines[0]) if len(lines) > 0 else 0.0
-        real_fps = self._parse_fps(lines[1]) if len(lines) > 1 else 0.0
-        fps = avg_fps or real_fps
-        is_vfr = avg_fps > 0 and real_fps > 0 and abs(avg_fps - real_fps) > 0.01
+        fps, is_vfr = source_timing(self.ffprobe, source)
         self._timing_cache[key] = (fps, is_vfr)
         return self._timing_cache[key]
 
@@ -736,29 +484,14 @@ class FreezeFrameWindow(QMainWindow):
         self.max_preview_cache_items = 80
         self.is_scrubbing = False
         self.current_frame_result: FrameCountResult | None = None
+        self.current_preview_aspect = 16 / 9
 
         self._build_ui()
         self._apply_style()
+        self._update_preview_viewport_size()
 
     def _parse_fps(self, value: str) -> float:
-        if not value or value == "N/A":
-            return 0.0
-        if "/" in value:
-            try:
-                num_raw, den_raw = value.split("/", 1)
-                num = float(num_raw)
-                den = float(den_raw)
-                if den == 0:
-                    return 0.0
-                fps = num / den
-                return fps if fps > 0 else 0.0
-            except Exception:
-                return 0.0
-        try:
-            fps = float(value)
-            return fps if fps > 0 else 0.0
-        except Exception:
-            return 0.0
+        return parse_fps(value)
 
     def _probe_stream_fields(self, source: Path, fields: str) -> list[str]:
         ffprobe = self.ffprobe
@@ -786,146 +519,21 @@ class FreezeFrameWindow(QMainWindow):
         return [line.strip() for line in probe.stdout.splitlines() if line.strip()]
 
     def _probe_stream_field(self, source: Path, field: str, extra_args: list[str] | None = None) -> str:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return ""
-        cmd = [ffprobe, "-v", "error"]
-        if extra_args:
-            cmd.extend(extra_args)
-        cmd.extend(
-            [
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                f"stream={field}",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ]
-        )
-        probe = subprocess.run(cmd, check=False, capture_output=True, text=True)
-        if probe.returncode != 0:
-            return ""
-        return probe.stdout.strip().splitlines()[0].strip() if probe.stdout.strip() else ""
+        return probe_stream_field(self.ffprobe, source, field, extra_args)
 
     def _probe_duration_seconds(self, source: Path) -> float:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return 0.0
-        probe = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
-            return 0.0
-        line = probe.stdout.strip().splitlines()[0] if probe.stdout.strip() else ""
-        try:
-            return max(0.0, float(line))
-        except Exception:
-            return 0.0
+        return probe_duration_seconds(self.ffprobe, source)
 
     def _resolve_frame_count(self, source: Path) -> FrameCountResult:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return FrameCountResult(300, "fallback", "safe_default", 30.0, 0.0, False)
-
-        # Step A: direct metadata
-        nb_frames_raw = self._probe_stream_field(source, "nb_frames")
-        avg_fps_raw = self._probe_stream_field(source, "avg_frame_rate")
-        real_fps_raw = self._probe_stream_field(source, "r_frame_rate")
-        duration_raw = self._probe_stream_field(source, "duration")
-
-        nb_frames = int(nb_frames_raw) if nb_frames_raw.isdigit() else 0
-        avg_fps = self._parse_fps(avg_fps_raw)
-        real_fps = self._parse_fps(real_fps_raw)
-        try:
-            duration = float(duration_raw) if duration_raw and duration_raw != "N/A" else 0.0
-        except Exception:
-            duration = 0.0
-        if duration <= 0:
-            duration = self._probe_duration_seconds(source)
-        fps_for_estimate = avg_fps or real_fps
-        is_vfr = avg_fps > 0 and real_fps > 0 and abs(avg_fps - real_fps) > 0.01
-
-        if nb_frames > 1:
-            result = FrameCountResult(nb_frames, "exact", "ffprobe_nb_frames", fps_for_estimate, duration, is_vfr)
-            logger.debug("Frame count resolved: %s", result)
-            return result
-
-        # Step B: counted frames
-        counted_raw = self._probe_stream_field(source, "nb_read_frames", ["-count_frames"])
-        if counted_raw.isdigit() and int(counted_raw) > 1:
-            result = FrameCountResult(int(counted_raw), "counted", "ffprobe_nb_read_frames", fps_for_estimate, duration, is_vfr)
-            logger.debug("Frame count resolved: %s", result)
-            return result
-
-        # Step C: counted packets fallback
-        packet_raw = self._probe_stream_field(source, "nb_read_packets", ["-count_packets"])
-        if packet_raw.isdigit() and int(packet_raw) > 1:
-            result = FrameCountResult(int(packet_raw), "counted", "ffprobe_nb_read_packets", fps_for_estimate, duration, is_vfr)
-            logger.debug("Frame count resolved: %s", result)
-            return result
-
-        # Step D: estimate from duration * fps
-        if duration > 0 and fps_for_estimate > 0:
-            estimate = max(2, int(round(duration * fps_for_estimate)))
-            result = FrameCountResult(estimate, "estimated", "duration_times_fps", fps_for_estimate, duration, is_vfr)
-            logger.debug("Frame count resolved: %s", result)
-            return result
-
-        # Step E: safe fallback
-        result = FrameCountResult(300, "fallback", "safe_default", 30.0, duration, is_vfr)
+        result = resolve_frame_count(self.ffprobe, source)
         logger.debug("Frame count resolved: %s", result)
         return result
 
     def _find_ffmpeg(self) -> str:
-        bundled_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-        bundled_candidate = bundled_root / "ffmpeg" / "ffmpeg"
-        candidates = [
-            str(bundled_candidate),
-            shutil.which("ffmpeg"),
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/usr/bin/ffmpeg",
-        ]
-        for candidate in candidates:
-            if not candidate:
-                continue
-            path = Path(candidate)
-            if path.is_file() and path.exists():
-                return str(path)
-        return ""
+        return find_ffmpeg()
 
     def _find_ffprobe(self) -> str:
-        ffmpeg_path = Path(self.ffmpeg) if self.ffmpeg else None
-        bundled_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-        bundled_candidate = bundled_root / "ffmpeg" / "ffprobe"
-        candidates = [
-            str(bundled_candidate),
-            str(ffmpeg_path.with_name("ffprobe")) if ffmpeg_path else "",
-            shutil.which("ffprobe"),
-            "/opt/homebrew/bin/ffprobe",
-            "/usr/local/bin/ffprobe",
-            "/usr/bin/ffprobe",
-        ]
-        for candidate in candidates:
-            if not candidate:
-                continue
-            path = Path(candidate)
-            if path.is_file() and path.exists():
-                return str(path)
-        return ""
+        return find_ffprobe(self.ffmpeg)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -1064,11 +672,7 @@ class FreezeFrameWindow(QMainWindow):
         right_preview = QVBoxLayout()
         right_preview.setSpacing(UI.SPACE_SM)
         self.batch_preview = QLabel("Preview not available in batch processing")
-        self.batch_preview.setObjectName("PathField")
-        self.batch_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.batch_preview.setMinimumHeight(UI.HEIGHT_PREVIEW_MIN)
-        self.batch_preview.setMinimumWidth(360)
-        self.batch_preview.setObjectName("PreviewSurface")
+        self._configure_preview_label(self.batch_preview)
         right_preview.addWidget(self.batch_preview)
         top_row.addLayout(right_preview, 2)
 
@@ -1122,6 +726,35 @@ class FreezeFrameWindow(QMainWindow):
         label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
+
+    def _configure_preview_label(self, label: QLabel) -> None:
+        label.setObjectName("PreviewSurface")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumWidth(180)
+        label.setMinimumHeight(100)
+        label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        label.setScaledContents(False)
+        label.setWordWrap(False)
+
+    def _update_preview_viewport_size(self) -> None:
+        # Max preview viewport: half window width, capped vertically to 16:9 of that width.
+        max_w = max(260, self.width() // 2)
+        max_h = max(146, int(max_w * 9 / 16))
+        aspect = self.current_preview_aspect if self.current_preview_aspect > 0 else (16 / 9)
+
+        target_w = max_w
+        target_h = int(target_w / aspect)
+        if target_h > max_h:
+            target_h = max_h
+            target_w = int(target_h * aspect)
+
+        target_w = max(180, target_w)
+        target_h = max(100, target_h)
+
+        for label_name in ("batch_preview", "preview_image"):
+            label = getattr(self, label_name, None)
+            if isinstance(label, QLabel):
+                label.setFixedSize(target_w, target_h)
 
     def _build_unified_advanced_controls(self) -> None:
         box = self.format_layout
@@ -1357,10 +990,7 @@ class FreezeFrameWindow(QMainWindow):
         top.addStretch(1)
         pv.addLayout(top)
         self.preview_image = QLabel("No preview generated")
-        self.preview_image.setObjectName("PreviewSurface")
-        self.preview_image.setMinimumHeight(130)
-        self.preview_image.setMaximumHeight(170)
-        self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._configure_preview_label(self.preview_image)
         pv.addWidget(self.preview_image)
 
         self.single_action_card = self._make_card()
@@ -1678,7 +1308,7 @@ class FreezeFrameWindow(QMainWindow):
         else:
             self.frame_count_info.setText(f"Frames: {max_frame} ({frame_result.source})")
         self._update_single_bit_depth_support()
-        self.generate_preview()
+        QTimer.singleShot(0, self.generate_preview)
 
     def choose_input_folder(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose input folder")
@@ -1750,8 +1380,11 @@ class FreezeFrameWindow(QMainWindow):
             item32.setForeground(Qt.GlobalColor.gray)
 
     def _update_single_bit_depth_support(self) -> None:
-        path_text = self.single_file_path.text().strip()
-        if not path_text or path_text == "No file selected":
+        if hasattr(self, "single_file_path"):
+            path_text = self.single_file_path.text().strip()
+        else:
+            path_text = self.input_path_label.text().strip()
+        if not path_text or path_text in ("No file selected", "No folder selected"):
             return
         source = Path(path_text)
         if not source.is_file():
@@ -1798,8 +1431,6 @@ class FreezeFrameWindow(QMainWindow):
         self.generate_preview()
 
     def _active_preview_label(self) -> QLabel:
-        if hasattr(self, "preview_image") and self.preview_image.isVisible():
-            return self.preview_image
         return self.batch_preview
 
     def _display_preview_pixmap(self, image_path: str) -> None:
@@ -1808,9 +1439,15 @@ class FreezeFrameWindow(QMainWindow):
         if pixmap.isNull():
             label.setText("Preview unavailable for selected frame")
             return
+        if pixmap.height() > 0:
+            self.current_preview_aspect = pixmap.width() / pixmap.height()
+            self._update_preview_viewport_size()
+        padding = UI.SPACE_MD
+        target_w = max(1, label.contentsRect().width() - (2 * padding))
+        target_h = max(1, label.contentsRect().height() - (2 * padding))
         scaled = pixmap.scaled(
-            label.width() - 20,
-            label.height() - 20,
+            target_w,
+            target_h,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -1845,10 +1482,6 @@ class FreezeFrameWindow(QMainWindow):
 
     def _queue_preview_update(self) -> None:
         path_text = self.input_path_label.text().strip()
-        if hasattr(self, "single_file_path"):
-            single_path_text = self.single_file_path.text().strip()
-            if single_path_text and single_path_text != "No file selected":
-                path_text = single_path_text
         if not path_text or path_text in ("No folder selected", "No file selected"):
             return
         if not Path(path_text).is_file():
@@ -1893,40 +1526,7 @@ class FreezeFrameWindow(QMainWindow):
         return files
 
     def _source_supports_16_bit(self, source: Path) -> bool:
-        ffprobe = self.ffprobe
-        if not Path(ffprobe).is_file():
-            return False
-        probe = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=pix_fmt,bits_per_raw_sample",
-                "-of",
-                "default=nw=1:nk=1",
-                str(source),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode != 0:
-            return False
-        lines = [line.strip() for line in probe.stdout.splitlines() if line.strip()]
-        for line in lines:
-            if line.isdigit() and int(line) > 8:
-                return True
-        pix_fmt = lines[0] if lines else ""
-        if re.search(r"p(10|12|14|16)(le|be)?$", pix_fmt):
-            return True
-        if re.search(r"(rgb|bgr|gbr)p?(30|36|48|64)(le|be)?$", pix_fmt):
-            return True
-        if re.search(r"gray(10|12|14|16)(le|be)?$", pix_fmt):
-            return True
-        return False
+        return source_supports_16_bit(self.ffprobe, source)
 
     def _update_tiff_controls_visibility(self) -> None:
         visible = self.tiff_cb.isChecked()
@@ -2174,10 +1774,6 @@ class FreezeFrameWindow(QMainWindow):
 
     def generate_preview(self) -> None:
         path_text = self.input_path_label.text().strip()
-        if hasattr(self, "single_file_path"):
-            single_path_text = self.single_file_path.text().strip()
-            if single_path_text and single_path_text != "No file selected":
-                path_text = single_path_text
 
         if not path_text or path_text in ("No folder selected", "No file selected"):
             return
@@ -2249,6 +1845,10 @@ class FreezeFrameWindow(QMainWindow):
         worker = self.sender()
         if worker is self.preview_worker:
             self.preview_worker = None
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_preview_viewport_size()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.preview_worker and self.preview_worker.isRunning():

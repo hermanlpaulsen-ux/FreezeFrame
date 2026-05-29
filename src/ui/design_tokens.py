@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+
+class UI:
+    # Spacing
+    SPACE_XS = 4
+    SPACE_SM = 8
+    SPACE_MD = 12
+    SPACE_LG = 16
+    SPACE_XL = 24
+    SPACE_XXL = 32
+    SPACE_SECTION = 48
+
+    # Radii
+    RADIUS_CONTROL = 10
+    RADIUS_CARD = 16
+    RADIUS_MEDIA = 20
+
+    # Heights
+    HEIGHT_COMPACT = 32
+    HEIGHT_CONTROL = 40
+    HEIGHT_PRIMARY = 44
+    HEIGHT_PREVIEW_MIN = 220
+    PREVIEW_MIN_WIDTH = 360
+
+    # Widths
+    PICKER_BUTTON_WIDTH = 116
+
+    # Typography
+    FONT_TITLE = 24
+    FONT_SECTION = 18
+    FONT_BODY = 13
+    FONT_SMALL = 12
+    FONT_BUTTON = 13
+
+    # Colors
+    BG_APP = "#143247"
+    BG_CARD = "#0E1624"
+    BG_CONTROL = "#122039"
+    BG_CONTROL_HOVER = "#1B3352"
+    BG_CONTROL_ACTIVE = "#152844"
+
+    BORDER_SUBTLE = "#1F2A44"
+    BORDER_CONTROL = "#2A3E5E"
+    BORDER_FOCUS = "#3A6AA8"
+
+    TEXT_PRIMARY = "#ECF2FF"
+    TEXT_SECONDARY = "#9DB0CC"
+    TEXT_MUTED = "#8CA0BE"
+
+    ACCENT = "#2E7BFF"
+    ACCENT_HOVER = "#3D8AFF"
+    ACCENT_ALT = "#1FD0B2"
+    SUCCESS = "#16A34A"
