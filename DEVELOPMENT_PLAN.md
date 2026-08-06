@@ -212,6 +212,28 @@ Acceptance criteria:
 - Unsupported bit-depth choices are disabled or clearly explained.
 - Preview renders quickly and matches export frame choice.
 
+### Phase 5C: Frameless Chrome, Light/Dark Theme, Responsive Layout (Completed)
+
+Objective: replace the native macOS window chrome with a custom floating-card shell, add a persisted light/dark theme, and make the layout genuinely responsive without ever compressing controls below their usable size.
+
+Deliverables:
+
+- Custom frameless window (`Qt.WindowType.FramelessWindowHint`) with a translucent backdrop and an inset `#WindowFrame` card carrying its own drop shadow, border, and radius — no native macOS title bar.
+- Custom `_TitleBar` widget: drag-to-move via `startSystemMove()`, double-click-to-maximize, and a theme toggle button.
+- Manual edge/corner window resize implemented via direct `setGeometry()` tracking on mouse press/move/release, replacing `startSystemResize()` (found to be unreliable on macOS in this Qt build — it silently no-opped instead of resizing).
+- Light/dark theme system (`design_tokens.py`): `LightPalette`/`DarkPalette` token classes, `set_theme()`/`get_palette()`/`current_theme()` accessors, persisted via `QSettings`. Light is the default theme.
+- `_PreviewLabel` (`QLabel` subclass): stores the source `QPixmap` and rescales it to `contentsRect().size()` in its own `resizeEvent`, so the preview always fits its card without manual pixel-math or deferred timers.
+- Visual pass: gradient app background, colored accent borders on cards/sub-blocks (Input/Output/Options/Preview each get a distinct accent), bolder section typography, a glowing gradient primary action button, and a permanently-dark preview canvas (theme-independent) for consistent image contrast.
+- Dynamic minimum-window-size enforcement: `setMinimumSize()` is computed from `centralWidget().minimumSizeHint()` (plus a small safety buffer) after the UI is built, instead of a hardcoded guess. This guarantees the window can never be shrunk to a size where cards/controls compress and visually overlap — growing the window past this floor adds space between/around cards rather than stretching individual controls (spinboxes, dropdowns, buttons keep their fixed sizes).
+
+Acceptance criteria:
+
+- Manual drag-resize from any edge/corner works reliably.
+- Preview panel fills its card at any window size while preserving aspect ratio.
+- Window cannot be resized smaller than the true content minimum; no card ever compresses below its own `minimumSizeHint()`.
+- Enlarging the window redistributes space between cards without stretching individual controls.
+- Theme preference persists across launches; default is light.
+
 ## Next Fixes
 
 - Batch frame selection consistency:
@@ -275,8 +297,8 @@ Completed implementation:
 
 ## UI Follow-Ups
 
-1. Improve title bar treatment on macOS (transparent/blended native approach).
-2. Add final spacing and typography pass for format controls across all window sizes.
+1. ~~Improve title bar treatment on macOS (transparent/blended native approach).~~ Done in Phase 5C: custom frameless chrome.
+2. ~~Add final spacing and typography pass for format controls across all window sizes.~~ Done in Phase 5C.
 3. Add tab-specific onboarding hints so users understand Batch vs Single File intent instantly.
 
 ## Risks and Mitigations

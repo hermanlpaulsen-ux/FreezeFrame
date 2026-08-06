@@ -8,8 +8,8 @@ import threading
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, Signal, QTimer
-from PySide6.QtGui import QCloseEvent, QFont, QIcon, QPixmap
+from PySide6.QtCore import QEvent, QSettings, QThread, Qt, Signal, QTimer
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -25,18 +26,18 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
-    QScrollArea,
     QSlider,
     QRadioButton,
     QSizePolicy,
     QSpinBox,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from core.models import FrameCountResult, VIDEO_EXTENSIONS
-from core.resources import SPIN_DOWN_ICON, SPIN_UP_ICON, resource_path
+from core.resources import resource_path, spin_icon_paths
 from ffmpeg.service import (
     find_ffmpeg,
     find_ffprobe,
@@ -48,10 +49,67 @@ from ffmpeg.service import (
     source_timing,
 )
 from platform_utils import open_in_file_manager
-from ui.design_tokens import UI
+from ui.design_tokens import Theme, UI, current_theme, get_palette, set_theme
 
 
 logger = logging.getLogger("freezeframe")
+
+SHADOW_MARGIN = 22
+TITLE_BAR_HEIGHT = 46
+
+
+class _PreviewLabel(QLabel):
+    """Preview surface that keeps its source image fitted to whatever space it is given."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self._source_pixmap: QPixmap | None = None
+
+    def set_source_pixmap(self, pixmap: "QPixmap | None") -> None:
+        self._source_pixmap = pixmap if pixmap is not None and not pixmap.isNull() else None
+        self._rescale()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._rescale()
+
+    def _rescale(self) -> None:
+        if self._source_pixmap is None:
+            return
+        target = self.contentsRect().size()
+        if target.width() <= 0 or target.height() <= 0:
+            return
+        scaled = self._source_pixmap.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        super().setPixmap(scaled)
+
+
+class _TitleBar(QWidget):
+    """Custom draggable title bar used in place of the native OS chrome."""
+
+    def __init__(self, owner_window: "FreezeFrameWindow") -> None:
+        super().__init__()
+        self._owner_window = owner_window
+        self.setMouseTracking(True)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self._owner_window.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._owner_window._toggle_maximize()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class FrameExportWorker(QThread):
@@ -462,9 +520,21 @@ class PreviewWorker(QThread):
 class FreezeFrameWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._settings = QSettings()
+        saved_theme = self._settings.value("appearance/theme", Theme.LIGHT)
+        set_theme(saved_theme)
         self.setWindowTitle("FreezeFrame")
-        self.resize(1320, 920)
-        self.setMinimumSize(1180, 840)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Window
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMouseTracking(True)
+        self._resize_edges = None
+        self._resize_start_geo = None
+        self._resize_start_pos = None
+        self.resize(1180, 760)
         app_icon_path = resource_path("assets/FreezeFrame_icon_1024.png")
         if app_icon_path.is_file():
             self.setWindowIcon(QIcon(str(app_icon_path)))
@@ -489,6 +559,8 @@ class FreezeFrameWindow(QMainWindow):
         self._build_ui()
         self._apply_style()
         self._update_preview_viewport_size()
+        content_min = self.centralWidget().minimumSizeHint()
+        self.setMinimumSize(content_min.width() + 12, content_min.height() + 12)
 
     def _parse_fps(self, value: str) -> float:
         return parse_fps(value)
@@ -536,37 +608,55 @@ class FreezeFrameWindow(QMainWindow):
         return find_ffprobe(self.ffmpeg)
 
     def _build_ui(self) -> None:
-        central = QWidget()
-        central.setObjectName("AppRoot")
-        self.setCentralWidget(central)
-        shell_layout = QVBoxLayout(central)
-        shell_layout.setContentsMargins(0, 0, 0, 0)
-        shell_layout.setSpacing(0)
+        shadow_layer = QWidget()
+        shadow_layer.setObjectName("ShadowLayer")
+        shadow_layer.setMouseTracking(True)
+        shadow_layer.installEventFilter(self)
+        self.setCentralWidget(shadow_layer)
+        self._shadow_layer = shadow_layer
 
-        scroll = QScrollArea()
-        scroll.setObjectName("AppScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        shell_layout.addWidget(scroll)
+        outer_layout = QVBoxLayout(shadow_layer)
+        outer_layout.setContentsMargins(SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN)
+        outer_layout.setSpacing(0)
+        self._outer_layout = outer_layout
+
+        window_frame = QFrame()
+        window_frame.setObjectName("WindowFrame")
+        window_frame.setMouseTracking(True)
+        outer_layout.addWidget(window_frame)
+        self.window_frame = window_frame
+
+        self._shadow_effect = QGraphicsDropShadowEffect(window_frame)
+        self._shadow_effect.setBlurRadius(56)
+        self._shadow_effect.setOffset(0, 16)
+        self._shadow_effect.setColor(QColor(10, 18, 32, 130))
+        window_frame.setGraphicsEffect(self._shadow_effect)
+
+        frame_layout = QVBoxLayout(window_frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+
+        self._build_title_bar(frame_layout)
 
         content = QWidget()
         content.setObjectName("AppCanvas")
-        scroll.setWidget(content)
+        frame_layout.addWidget(content, 1)
 
-        self.root_layout = QVBoxLayout(content)
-        self.root_layout.setContentsMargins(UI.SPACE_LG, UI.SPACE_LG, UI.SPACE_LG, UI.SPACE_LG)
-        self.root_layout.setSpacing(UI.SPACE_XL)
-        self.root_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(UI.SPACE_LG, UI.SPACE_MD, UI.SPACE_LG, UI.SPACE_LG)
+        content_layout.setSpacing(UI.SPACE_LG)
 
-        self._build_tab_header(self.root_layout, active_index=0)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(UI.SPACE_MD)
+        content_layout.addLayout(left_col, 5)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(UI.SPACE_MD)
+        content_layout.addLayout(right_col, 4)
 
         self.batch_io_card = self._make_card()
         bio = QVBoxLayout(self.batch_io_card)
         self._configure_card_layout(bio)
-        in_title = QLabel("Input")
-        in_title.setObjectName("SectionTitle")
-        in_desc = QLabel("Select an input folder or input file.")
-        in_desc.setObjectName("SectionDesc")
         in_row = QHBoxLayout()
         in_row.setSpacing(UI.SPACE_MD)
         self.input_path_label = self._make_path_label("No folder selected")
@@ -579,18 +669,15 @@ class FreezeFrameWindow(QMainWindow):
         in_row.addWidget(self.input_path_label, 1)
         in_row.addWidget(in_btn)
         in_row.addWidget(in_folder_btn)
-        in_block = QVBoxLayout()
+        in_container = self._make_subblock("Blue")
+        in_block = QVBoxLayout(in_container)
+        in_block.setContentsMargins(UI.SPACE_MD, UI.SPACE_XS, UI.SPACE_XS, UI.SPACE_XS)
         in_block.setSpacing(8)
-        in_block.addWidget(in_title)
-        in_block.addWidget(in_desc)
+        in_block.addLayout(self._section_header("Input", "IN", "Blue"))
         in_block.addLayout(in_row)
-        bio.addLayout(in_block)
+        bio.addWidget(in_container)
         bio.addSpacing(UI.SPACE_SM)
 
-        out_title = QLabel("Output")
-        out_title.setObjectName("SectionTitle")
-        out_desc = QLabel("Select where output files will be saved.")
-        out_desc.setObjectName("SectionDesc")
         out_row = QHBoxLayout()
         out_row.setSpacing(UI.SPACE_MD)
         self.output_path_label = self._make_path_label("No folder selected")
@@ -599,51 +686,50 @@ class FreezeFrameWindow(QMainWindow):
         out_btn.clicked.connect(self.choose_output_folder)
         out_row.addWidget(self.output_path_label, 1)
         out_row.addWidget(out_btn)
-        out_block = QVBoxLayout()
+        out_container = self._make_subblock("Violet")
+        out_block = QVBoxLayout(out_container)
+        out_block.setContentsMargins(UI.SPACE_MD, UI.SPACE_XS, UI.SPACE_XS, UI.SPACE_XS)
         out_block.setSpacing(8)
-        out_block.addWidget(out_title)
-        out_block.addWidget(out_desc)
+        out_block.addLayout(self._section_header("Output", "OUT", "Violet"))
         out_block.addLayout(out_row)
-        bio.addLayout(out_block)
-        self.root_layout.addWidget(self.batch_io_card)
+        bio.addWidget(out_container)
+        left_col.addWidget(self.batch_io_card)
 
-        self.format_card = self._make_card()
+        self.format_card = self._make_card(accent="Teal")
         self.format_layout = QVBoxLayout(self.format_card)
         self._configure_card_layout(self.format_layout)
-        format_title = QLabel("Options")
-        format_title.setObjectName("SectionTitle")
-        format_desc = QLabel("Choose one or more formats. Files are saved to format subfolders (JPEG/PNG/TIFF).")
-        format_desc.setObjectName("SectionDesc")
 
         format_row = QHBoxLayout()
-        format_row.setSpacing(UI.SPACE_XXL)
-        format_row.setContentsMargins(0, UI.SPACE_MD, 0, UI.SPACE_MD)
-        self.jpeg_cb = QCheckBox("JPEG")
+        format_row.setSpacing(UI.SPACE_MD)
+        format_row.setContentsMargins(0, UI.SPACE_XS, 0, UI.SPACE_XS)
+        self.jpeg_cb = QToolButton()
+        self.jpeg_cb.setText("JPEG")
+        self.jpeg_cb.setCheckable(True)
         self.jpeg_cb.setChecked(True)
-        self.png_cb = QCheckBox("PNG")
-        self.tiff_cb = QCheckBox("TIFF")
+        self.png_cb = QToolButton()
+        self.png_cb.setText("PNG")
+        self.png_cb.setCheckable(True)
+        self.tiff_cb = QToolButton()
+        self.tiff_cb.setText("TIFF")
+        self.tiff_cb.setCheckable(True)
         for checkbox in (self.jpeg_cb, self.png_cb, self.tiff_cb):
+            checkbox.setObjectName("FormatChip")
             checkbox.setMinimumHeight(UI.HEIGHT_COMPACT)
             checkbox.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         format_row.addWidget(self.jpeg_cb)
         format_row.addWidget(self.png_cb)
         format_row.addWidget(self.tiff_cb)
         format_row.addStretch(1)
 
-        self.format_layout.addWidget(format_title)
-        self.format_layout.addWidget(format_desc)
+        self.format_layout.addLayout(self._section_header("Options", "OPT", "Teal"))
         self.format_layout.addLayout(format_row)
-        self.root_layout.addWidget(self.format_card)
+        left_col.addWidget(self.format_card)
 
         self.action_card = self._make_card()
         action_layout = QVBoxLayout(self.action_card)
         self._configure_card_layout(action_layout)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(UI.SPACE_MD)
-        top_row.setAlignment(Qt.AlignmentFlag.AlignTop)
-        left_col = QVBoxLayout()
-        left_col.setSpacing(UI.SPACE_SM)
         button_row = QHBoxLayout()
         button_row.setSpacing(UI.SPACE_SM)
         self.action_button = self._make_primary_button("Start")
@@ -664,17 +750,6 @@ class FreezeFrameWindow(QMainWindow):
         self.status_label.setObjectName("StatusLabel")
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(UI.HEIGHT_COMPACT)
-        left_col.addLayout(button_row)
-        left_col.addWidget(self.status_label)
-        left_col.addStretch(1)
-        top_row.addLayout(left_col, 3)
-
-        right_preview = QVBoxLayout()
-        right_preview.setSpacing(UI.SPACE_SM)
-        self.batch_preview = QLabel("Preview not available in batch processing")
-        self._configure_preview_label(self.batch_preview)
-        right_preview.addWidget(self.batch_preview)
-        top_row.addLayout(right_preview, 2)
 
         progress_header = QHBoxLayout()
         progress_title = QLabel("Progress")
@@ -690,27 +765,69 @@ class FreezeFrameWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
 
-        action_layout.addLayout(top_row)
-        action_layout.addSpacing(UI.SPACE_XS)
+        action_layout.addLayout(button_row)
+        action_layout.addWidget(self.status_label)
         action_layout.addLayout(progress_header)
         action_layout.addWidget(self.progress_bar)
-        self.root_layout.addWidget(self.action_card)
+        left_col.addWidget(self.action_card)
+        left_col.addStretch(1)
+
+        self.preview_card = self._make_card(accent="Amber")
+        pv = QVBoxLayout(self.preview_card)
+        self._configure_card_layout(pv)
+        pv.addLayout(self._section_header("Preview", "PRE", "Amber"))
+        self.batch_preview = _PreviewLabel("Preview not available in batch processing")
+        self._configure_preview_label(self.batch_preview)
+        pv.addWidget(self.batch_preview, 1)
+        right_col.addWidget(self.preview_card, 1)
 
         self._build_unified_advanced_controls()
 
-    def _make_card(self) -> QFrame:
+    def _section_header(self, title_text: str, badge_text: str, badge_key: str) -> QHBoxLayout:
+        badge = QLabel(badge_text)
+        badge.setObjectName(f"Badge{badge_key}")
+        badge.setFixedSize(32, 32)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = QLabel(title_text)
+        title.setObjectName("SectionTitle")
+        row = QHBoxLayout()
+        row.setSpacing(UI.SPACE_MD)
+        row.addWidget(badge)
+        row.addWidget(title)
+        row.addStretch(1)
+        return row
+
+    def _make_card(self, accent: str | None = None) -> QFrame:
         card = QFrame()
         card.setObjectName("Card")
+        if accent:
+            card.setProperty("accent", accent)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(20, 30, 50, 40))
+        card.setGraphicsEffect(shadow)
         return card
 
+    def _make_subblock(self, accent: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("SubBlock")
+        frame.setProperty("accent", accent)
+        return frame
+
     def _configure_card_layout(self, layout: QVBoxLayout) -> None:
-        layout.setContentsMargins(UI.SPACE_XL, UI.SPACE_LG, UI.SPACE_XL, UI.SPACE_LG)
-        layout.setSpacing(UI.SPACE_MD)
+        layout.setContentsMargins(UI.SPACE_LG, UI.SPACE_MD, UI.SPACE_LG, UI.SPACE_MD)
+        layout.setSpacing(UI.SPACE_SM)
 
     def _make_primary_button(self, text: str) -> QPushButton:
         btn = QPushButton(text)
         btn.setObjectName("PrimaryButton")
-        btn.setFixedHeight(UI.HEIGHT_PRIMARY)
+        btn.setFixedHeight(UI.HEIGHT_PRIMARY + 8)
+        glow = QGraphicsDropShadowEffect(btn)
+        glow.setBlurRadius(24)
+        glow.setOffset(0, 6)
+        glow.setColor(QColor(46, 107, 255, 90))
+        btn.setGraphicsEffect(glow)
         return btn
 
     def _make_secondary_button(self, text: str) -> QPushButton:
@@ -732,14 +849,20 @@ class FreezeFrameWindow(QMainWindow):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setMinimumWidth(180)
         label.setMinimumHeight(100)
-        label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         label.setScaledContents(False)
         label.setWordWrap(False)
 
     def _update_preview_viewport_size(self) -> None:
-        # Max preview viewport: half window width, capped vertically to 16:9 of that width.
-        max_w = max(260, self.width() // 2)
-        max_h = max(146, int(max_w * 9 / 16))
+        # Preview viewport is capped to the available space inside the preview card.
+        container = getattr(self, "preview_card", None)
+        if container is not None and container.width() > 0:
+            padding = UI.SPACE_XL * 2
+            max_w = max(220, container.width() - padding)
+            max_h = max(140, container.height() - padding - 40)
+        else:
+            max_w = max(260, self.width() // 2)
+            max_h = max(146, int(max_w * 9 / 16))
         aspect = self.current_preview_aspect if self.current_preview_aspect > 0 else (16 / 9)
 
         target_w = max_w
@@ -751,52 +874,47 @@ class FreezeFrameWindow(QMainWindow):
         target_w = max(180, target_w)
         target_h = max(100, target_h)
 
-        for label_name in ("batch_preview", "preview_image"):
+        for label_name in ("preview_image",):
             label = getattr(self, label_name, None)
             if isinstance(label, QLabel):
                 label.setFixedSize(target_w, target_h)
 
     def _build_unified_advanced_controls(self) -> None:
         box = self.format_layout
-        box.addSpacing(8)
-        box.addWidget(self._label("Single-file settings are available here when processing a selected file.", "SectionDesc"))
 
-        row_a = QGridLayout()
-        row_a.setHorizontalSpacing(12)
-        row_a.setVerticalSpacing(10)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
         self.single_quality = QSpinBox()
         self.single_quality.setRange(1, 12)
         self.single_quality.setValue(12)
-        self.single_quality.setFixedWidth(90)
-        row_a.addWidget(self._label("Quality (1-12):", "InlineLabel"), 0, 0)
-        row_a.addWidget(self.single_quality, 0, 1)
+        self.single_quality.setFixedWidth(72)
+        grid.addWidget(self._label("Quality:", "InlineLabel"), 0, 0)
+        grid.addWidget(self.single_quality, 0, 1)
         self.single_bit_depth = QComboBox()
         self.single_bit_depth.addItems(["8-bit", "16-bit", "32-bit"])
-        self.single_bit_depth.setFixedWidth(110)
+        self.single_bit_depth.setFixedWidth(100)
         self.single_bit_depth.setCurrentIndex(0)
         self._disable_unsupported_bit_depth_option(self.single_bit_depth)
-        row_a.addWidget(self._label("Bit Depth:", "InlineLabel"), 0, 2)
-        row_a.addWidget(self.single_bit_depth, 0, 3)
+        grid.addWidget(self._label("Bit Depth:", "InlineLabel"), 0, 2)
+        grid.addWidget(self.single_bit_depth, 0, 3)
+
         self.single_res_preset = QComboBox()
         self.single_res_preset.addItems(["Original", "2160", "1080", "720"])
-        self.single_res_preset.setFixedWidth(130)
-        row_a.addWidget(self._label("Resolution:", "InlineLabel"), 0, 4)
-        row_a.addWidget(self.single_res_preset, 0, 5)
-        row_a.setColumnStretch(6, 1)
-        box.addLayout(row_a)
-
-        row_b = QHBoxLayout()
-        row_b.setSpacing(10)
+        self.single_res_preset.setFixedWidth(100)
+        grid.addWidget(self._label("Resolution:", "InlineLabel"), 1, 0)
+        grid.addWidget(self.single_res_preset, 1, 1)
         self.frame_index_spin = QSpinBox()
         self.frame_index_spin.setRange(1, 1)
         self.frame_index_spin.setValue(1)
-        self.frame_index_spin.setFixedWidth(120)
-        row_b.addWidget(self._label("Frame #:", "InlineLabel"))
-        row_b.addWidget(self.frame_index_spin)
-        row_b.addStretch(1)
+        self.frame_index_spin.setFixedWidth(90)
+        grid.addWidget(self._label("Frame #:", "InlineLabel"), 1, 2)
+        grid.addWidget(self.frame_index_spin, 1, 3)
+        grid.setColumnStretch(4, 1)
+        box.addLayout(grid)
+
         self.frame_count_info = self._label("Frames: unknown", "SectionDesc")
-        row_b.addWidget(self.frame_count_info)
-        box.addLayout(row_b)
+        box.addWidget(self.frame_count_info)
 
         self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setRange(1, 1)
@@ -814,28 +932,26 @@ class FreezeFrameWindow(QMainWindow):
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(120)
         self.preview_timer.timeout.connect(self.generate_preview)
-        
 
-        # File options are now consolidated into the same "Options" segment.
-
-    def _build_tab_header(self, layout: QVBoxLayout, active_index: int) -> None:
-        header_card = self._make_card()
-        header_layout = QHBoxLayout(header_card)
-        header_layout.setContentsMargins(22, 20, 22, 20)
-        header_layout.setSpacing(16)
+    def _build_title_bar(self, layout: QVBoxLayout) -> None:
+        bar = _TitleBar(self)
+        bar.setObjectName("TitleBar")
+        bar.setFixedHeight(TITLE_BAR_HEIGHT)
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(18, 0, 10, 0)
+        bar_layout.setSpacing(10)
 
         icon = QLabel("")
-        icon.setObjectName("HeaderIcon")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setFixedSize(76, 76)
+        icon.setObjectName("TitleBarIcon")
+        icon.setFixedSize(22, 22)
         logo_path = resource_path("assets/FreezeFrame_icon_1024.png")
         if logo_path.is_file():
             pixmap = QPixmap(str(logo_path))
             if not pixmap.isNull():
                 icon.setPixmap(
                     pixmap.scaled(
-                        54,
-                        54,
+                        22,
+                        22,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
                     )
@@ -843,18 +959,162 @@ class FreezeFrameWindow(QMainWindow):
         if not icon.pixmap():
             icon.setText("❄")
 
-        title_wrap = QVBoxLayout()
-        title_wrap.setSpacing(2)
         title_label = QLabel("FreezeFrame")
-        title_label.setObjectName("Title")
-        subtitle_label = QLabel("Extract frames from videos and save them your way.")
-        subtitle_label.setObjectName("Subtitle")
-        title_wrap.addWidget(title_label)
-        title_wrap.addWidget(subtitle_label)
+        title_label.setObjectName("TitleBarText")
 
-        header_layout.addWidget(icon)
-        header_layout.addLayout(title_wrap, 1)
-        layout.addWidget(header_card)
+        bar_layout.addWidget(icon)
+        bar_layout.addWidget(title_label)
+        bar_layout.addStretch(1)
+
+        theme_button = QToolButton()
+        theme_button.setObjectName("ThemeToggle")
+        theme_button.setCheckable(True)
+        theme_button.setChecked(current_theme() == Theme.DARK)
+        theme_button.setText("☾" if current_theme() == Theme.LIGHT else "☀")
+        theme_button.setToolTip(
+            "Switch to dark mode" if current_theme() == Theme.LIGHT else "Switch to light mode"
+        )
+        theme_button.setFixedSize(30, 30)
+        theme_button.clicked.connect(self._on_theme_toggle)
+        bar_layout.addWidget(theme_button)
+        self._theme_toggle_button = theme_button
+
+        min_button = QToolButton()
+        min_button.setObjectName("WinBtnMin")
+        min_button.setText("–")
+        min_button.setToolTip("Minimize")
+        min_button.setFixedSize(28, 28)
+        min_button.clicked.connect(self.showMinimized)
+
+        self._max_button = QToolButton()
+        self._max_button.setObjectName("WinBtnMax")
+        self._max_button.setText("▢")
+        self._max_button.setToolTip("Maximize")
+        self._max_button.setFixedSize(28, 28)
+        self._max_button.clicked.connect(self._toggle_maximize)
+
+        close_button = QToolButton()
+        close_button.setObjectName("WinBtnClose")
+        close_button.setText("×")
+        close_button.setToolTip("Close")
+        close_button.setFixedSize(28, 28)
+        close_button.clicked.connect(self.close)
+
+        for button in (min_button, self._max_button, close_button):
+            bar_layout.addWidget(button)
+
+        self._title_bar = bar
+        layout.addWidget(bar)
+
+    def _toggle_maximize(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            is_max = self.isMaximized()
+            margin = 0 if is_max else SHADOW_MARGIN
+            self._outer_layout.setContentsMargins(margin, margin, margin, margin)
+            self.window_frame.setProperty("maximized", is_max)
+            self.window_frame.style().unpolish(self.window_frame)
+            self.window_frame.style().polish(self.window_frame)
+            if hasattr(self, "_max_button"):
+                self._max_button.setText("❐" if is_max else "▢")
+                self._max_button.setToolTip("Restore" if is_max else "Maximize")
+
+    def _resize_edge_at(self, pos) -> "Qt.Edges | None":
+        w = self._shadow_layer.width()
+        h = self._shadow_layer.height()
+        margin = SHADOW_MARGIN
+        left = pos.x() <= margin
+        right = pos.x() >= w - margin
+        top = pos.y() <= margin
+        bottom = pos.y() >= h - margin
+        if not (left or right or top or bottom):
+            return None
+        edges = Qt.Edge(0)
+        if top:
+            edges |= Qt.Edge.TopEdge
+        if bottom:
+            edges |= Qt.Edge.BottomEdge
+        if left:
+            edges |= Qt.Edge.LeftEdge
+        if right:
+            edges |= Qt.Edge.RightEdge
+        return edges
+
+    def _cursor_for_edges(self, edges) -> Qt.CursorShape:
+        has_top = bool(edges & Qt.Edge.TopEdge)
+        has_bottom = bool(edges & Qt.Edge.BottomEdge)
+        has_left = bool(edges & Qt.Edge.LeftEdge)
+        has_right = bool(edges & Qt.Edge.RightEdge)
+        if (has_top and has_left) or (has_bottom and has_right):
+            return Qt.CursorShape.SizeFDiagCursor
+        if (has_top and has_right) or (has_bottom and has_left):
+            return Qt.CursorShape.SizeBDiagCursor
+        if has_left or has_right:
+            return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.SizeVerCursor
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is getattr(self, "_shadow_layer", None) and not self.isMaximized():
+            if event.type() == QEvent.Type.MouseMove:
+                if self._resize_edges is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+                    self._perform_manual_resize(event.globalPosition().toPoint())
+                    return True
+                edges = self._resize_edge_at(event.position().toPoint())
+                self._shadow_layer.setCursor(
+                    self._cursor_for_edges(edges) if edges else Qt.CursorShape.ArrowCursor
+                )
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                edges = self._resize_edge_at(event.position().toPoint())
+                if edges:
+                    self._resize_edges = edges
+                    self._resize_start_geo = self.geometry()
+                    self._resize_start_pos = event.globalPosition().toPoint()
+                    return True
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                if self._resize_edges is not None:
+                    self._resize_edges = None
+                    self._resize_start_geo = None
+                    self._resize_start_pos = None
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _perform_manual_resize(self, global_pos) -> None:
+        if self._resize_start_geo is None or self._resize_start_pos is None:
+            return
+        delta = global_pos - self._resize_start_pos
+        geo = self._resize_start_geo
+        x, y, w, h = geo.x(), geo.y(), geo.width(), geo.height()
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        edges = self._resize_edges
+        new_x, new_y, new_w, new_h = x, y, w, h
+        if edges & Qt.Edge.LeftEdge:
+            new_w = max(min_w, w - delta.x())
+            new_x = x + (w - new_w)
+        if edges & Qt.Edge.RightEdge:
+            new_w = max(min_w, w + delta.x())
+        if edges & Qt.Edge.TopEdge:
+            new_h = max(min_h, h - delta.y())
+            new_y = y + (h - new_h)
+        if edges & Qt.Edge.BottomEdge:
+            new_h = max(min_h, h + delta.y())
+        self.setGeometry(new_x, new_y, new_w, new_h)
+
+    def _on_theme_toggle(self) -> None:
+        new_theme = Theme.DARK if current_theme() == Theme.LIGHT else Theme.LIGHT
+        set_theme(new_theme)
+        self._settings.setValue("appearance/theme", new_theme)
+        self._apply_style()
+        self._theme_toggle_button.setChecked(new_theme == Theme.DARK)
+        self._theme_toggle_button.setText("☀" if new_theme == Theme.DARK else "☾")
+        self._theme_toggle_button.setToolTip(
+            "Switch to light mode" if new_theme == Theme.DARK else "Switch to dark mode"
+        )
 
     def _switch_main_tab(self, index: int) -> None:
         self.tabs.setCurrentIndex(index)
@@ -1088,86 +1348,163 @@ class FreezeFrameWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         QApplication.setStyle("Fusion")
+        palette = get_palette()
+        spin_up_icon, spin_down_icon = spin_icon_paths(current_theme())
         self.setStyleSheet(
             f"""
-            QMainWindow, #AppRoot, #AppCanvas, #AppScroll, #AppScroll > QWidget, QScrollArea {{
-              background-color: {UI.BG_APP};
+            QMainWindow {{
+              background: transparent;
+            }}
+            #ShadowLayer {{
+              background: transparent;
+            }}
+            #WindowFrame {{
+              background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {palette.BG_APP_GRADIENT_TOP}, stop:1 {palette.BG_APP_GRADIENT_BOTTOM});
+              border: 1px solid {palette.BORDER_SUBTLE};
+              border-radius: 22px;
+            }}
+            #WindowFrame[maximized="true"] {{
+              border-radius: 0px;
+            }}
+            #AppCanvas {{
+              background: transparent;
+            }}
+            #TitleBar {{
+              background: transparent;
+              border-bottom: 1px solid {palette.BORDER_SUBTLE};
+            }}
+            #TitleBarIcon {{ background: transparent; font-size: 15px; }}
+            #TitleBarText {{
+              font-size: 14px;
+              font-weight: 800;
+              letter-spacing: 0.3px;
+              color: {palette.TEXT_PRIMARY};
+              background: transparent;
             }}
             #Card {{
-              border: 1px solid {UI.BORDER_SUBTLE};
+              border: none;
+              border-top: 3px solid transparent;
               border-radius: {UI.RADIUS_CARD}px;
-              background-color: {UI.BG_CARD};
+              background-color: {palette.BG_CARD};
             }}
-            #HeaderIcon {{
-              border: 1px solid {UI.ACCENT};
-              border-radius: {UI.RADIUS_CONTROL}px;
-              background-color: #0A2038;
-              color: #1EC8FF;
-              font-size: 28px;
+            #Card[accent="Teal"] {{ border-top-color: {palette.BADGE_TEAL_FG}; }}
+            #Card[accent="Amber"] {{ border-top-color: {palette.BADGE_AMBER_FG}; }}
+            #Card[accent="Blue"] {{ border-top-color: {palette.BADGE_BLUE_FG}; }}
+            #Card[accent="Violet"] {{ border-top-color: {palette.BADGE_VIOLET_FG}; }}
+            #SubBlock {{
+              border-left: 3px solid {palette.BORDER_SUBTLE};
+              border-radius: 3px;
+              background: transparent;
             }}
-            #Title {{ font-size: {UI.FONT_TITLE}px; font-weight: 650; color: {UI.TEXT_PRIMARY}; }}
-            #Subtitle {{ font-size: {UI.FONT_SMALL}px; color: {UI.TEXT_SECONDARY}; }}
-            #SectionTitle {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {UI.TEXT_PRIMARY}; }}
-            #SectionDesc {{ font-size: {UI.FONT_SMALL}px; color: {UI.TEXT_SECONDARY}; }}
-            #InlineLabel {{ font-size: {UI.FONT_SMALL}px; font-weight: 500; color: {UI.TEXT_SECONDARY}; }}
+            #SubBlock[accent="Blue"] {{ border-left-color: {palette.BADGE_BLUE_FG}; }}
+            #SubBlock[accent="Violet"] {{ border-left-color: {palette.BADGE_VIOLET_FG}; }}
+            #BadgeBlue, #BadgeViolet, #BadgeTeal, #BadgeAmber {{
+              border-radius: 11px;
+              font-size: 10px;
+              font-weight: 800;
+              letter-spacing: 0.5px;
+            }}
+            #BadgeBlue {{ background-color: {palette.BADGE_BLUE_BG}; color: {palette.BADGE_BLUE_FG}; }}
+            #BadgeViolet {{ background-color: {palette.BADGE_VIOLET_BG}; color: {palette.BADGE_VIOLET_FG}; }}
+            #BadgeTeal {{ background-color: {palette.BADGE_TEAL_BG}; color: {palette.BADGE_TEAL_FG}; }}
+            #BadgeAmber {{ background-color: {palette.BADGE_AMBER_BG}; color: {palette.BADGE_AMBER_FG}; }}
+            #ThemeToggle {{
+              border: 1px solid {palette.BORDER_CONTROL};
+              border-radius: 15px;
+              background-color: {palette.BG_CONTROL};
+              color: {palette.TEXT_PRIMARY};
+              font-size: 14px;
+            }}
+            #ThemeToggle:hover {{
+              background-color: {palette.BG_CONTROL_HOVER};
+              border-color: {palette.BORDER_FOCUS};
+            }}
+            #ThemeToggle:pressed, #ThemeToggle:checked {{
+              background-color: {palette.BG_CONTROL_ACTIVE};
+            }}
+            QToolButton#WinBtnMin, QToolButton#WinBtnMax, QToolButton#WinBtnClose {{
+              border: none;
+              border-radius: 14px;
+              background: transparent;
+              color: {palette.TEXT_SECONDARY};
+              font-size: 15px;
+              font-weight: 600;
+            }}
+            QToolButton#WinBtnMin:hover, QToolButton#WinBtnMax:hover {{
+              background-color: {palette.BG_CONTROL_HOVER};
+              color: {palette.TEXT_PRIMARY};
+            }}
+            QToolButton#WinBtnClose:hover {{
+              background-color: #E24C4C;
+              color: #FFFFFF;
+            }}
+            #SectionTitle {{ font-size: {UI.FONT_SECTION + 2}px; font-weight: 800; letter-spacing: 0.2px; color: {palette.TEXT_PRIMARY}; }}
+            #SectionDesc {{ font-size: {UI.FONT_SMALL}px; color: {palette.TEXT_SECONDARY}; }}
+            #InlineLabel {{ font-size: {UI.FONT_SMALL}px; font-weight: 500; color: {palette.TEXT_SECONDARY}; }}
             #PathField {{
-              border: 1px solid {UI.BORDER_CONTROL};
+              border: 1px solid {palette.BORDER_CONTROL};
               border-radius: {UI.RADIUS_CONTROL}px;
               padding: {UI.SPACE_SM}px {UI.SPACE_MD}px;
-              background-color: {UI.BG_CONTROL};
-              color: {UI.TEXT_PRIMARY};
+              background-color: {palette.BG_CONTROL};
+              color: {palette.TEXT_PRIMARY};
               font-size: {UI.FONT_SMALL}px;
             }}
             #PreviewSurface {{
-              border: 1px solid {UI.BORDER_CONTROL};
+              border: 1px solid #232B45;
               border-radius: {UI.RADIUS_MEDIA}px;
               padding: {UI.SPACE_MD}px;
-              background-color: {UI.BG_CONTROL};
-              color: {UI.TEXT_MUTED};
+              background-color: #10152A;
+              color: #7C88AC;
               font-size: {UI.FONT_SMALL}px;
             }}
-            #StatusLabel {{ color: {UI.TEXT_SECONDARY}; font-size: {UI.FONT_SMALL}px; }}
-            #ProgressTitle {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {UI.TEXT_PRIMARY}; }}
-            #ProgressPct {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {UI.TEXT_SECONDARY}; }}
+            #StatusLabel {{ color: {palette.TEXT_SECONDARY}; font-size: {UI.FONT_SMALL}px; }}
+            #ProgressTitle {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {palette.TEXT_PRIMARY}; }}
+            #ProgressPct {{ font-size: {UI.FONT_SECTION}px; font-weight: 650; color: {palette.TEXT_SECONDARY}; }}
             QPushButton {{
-              border: 1px solid {UI.BORDER_CONTROL};
+              border: 1px solid {palette.BORDER_CONTROL};
               border-radius: {UI.RADIUS_CONTROL}px;
               padding: {UI.SPACE_SM}px {UI.SPACE_MD}px;
               font-size: {UI.FONT_BUTTON}px;
               font-weight: 600;
-              color: {UI.TEXT_PRIMARY};
-              background-color: {UI.BG_CONTROL};
+              color: {palette.TEXT_PRIMARY};
+              background-color: {palette.BG_CONTROL};
             }}
             QPushButton:hover {{
-              background-color: {UI.BG_CONTROL_HOVER};
-              border-color: {UI.BORDER_FOCUS};
+              background-color: {palette.BG_CONTROL_HOVER};
+              border-color: {palette.BORDER_FOCUS};
             }}
             QPushButton:pressed {{
-              background-color: {UI.BG_CONTROL_ACTIVE};
-              border-color: {UI.BORDER_FOCUS};
+              background-color: {palette.BG_CONTROL_ACTIVE};
+              border-color: {palette.BORDER_FOCUS};
             }}
             QPushButton:disabled {{
-              color: {UI.TEXT_MUTED};
-              border-color: {UI.BORDER_CONTROL};
-              background-color: #1A2436;
+              color: {palette.TEXT_MUTED};
+              border-color: {palette.BORDER_CONTROL};
+              background-color: {palette.DISABLED_BG};
             }}
             QPushButton#PrimaryButton {{
-              min-height: {UI.HEIGHT_PRIMARY}px;
-              font-size: {UI.FONT_BUTTON}px;
-              border: 1px solid {UI.ACCENT};
-              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {UI.ACCENT_ALT}, stop:1 {UI.ACCENT});
+              min-height: {UI.HEIGHT_PRIMARY + 8}px;
+              font-size: {UI.FONT_BUTTON + 1}px;
+              font-weight: 700;
+              border: none;
+              border-radius: {UI.RADIUS_CONTROL + 4}px;
+              color: #FFFFFF;
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.ACCENT_ALT}, stop:1 {palette.ACCENT});
             }}
             QPushButton#PrimaryButton:hover {{
-              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #2ADDC0, stop:1 {UI.ACCENT_HOVER});
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.ACCENT_GRADIENT_HOVER_START}, stop:1 {palette.ACCENT_HOVER});
             }}
             QPushButton#PrimaryButton:pressed {{
-              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #16B99D, stop:1 #2367D8);
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.ACCENT_GRADIENT_PRESSED_START}, stop:1 {palette.ACCENT_GRADIENT_PRESSED_END});
             }}
             QPushButton#OutputButton {{
               min-height: {UI.HEIGHT_PRIMARY}px;
               font-size: {UI.FONT_BUTTON}px;
-              border: 1px solid {UI.SUCCESS};
-              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #27D491, stop:1 #16A34A);
+              font-weight: 700;
+              color: #FFFFFF;
+              border: 1px solid {palette.SUCCESS};
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.SUCCESS_HOVER}, stop:1 {palette.SUCCESS_PRESSED});
             }}
             QPushButton#OpenButton, QPushButton#SecondaryButton {{
               min-height: {UI.HEIGHT_CONTROL}px;
@@ -1178,41 +1515,55 @@ class FreezeFrameWindow(QMainWindow):
             QCheckBox {{
               font-size: {UI.FONT_SMALL}px;
               spacing: {UI.SPACE_SM}px;
-              color: {UI.TEXT_PRIMARY};
+              color: {palette.TEXT_PRIMARY};
               min-height: {UI.HEIGHT_COMPACT}px;
             }}
             QCheckBox::indicator {{
               width: 16px; height: 16px; border-radius: 4px;
-              border: 1px solid #3C5E8D; background-color: #10203A;
+              border: 1px solid {palette.CHECKBOX_BORDER}; background-color: {palette.CHECKBOX_BG};
             }}
-            QCheckBox::indicator:checked {{ border: 1px solid #22C9B3; background-color: #1AC7AE; image: none; }}
+            QCheckBox::indicator:checked {{ border: 1px solid {palette.CHECKBOX_CHECKED_BORDER}; background-color: {palette.CHECKBOX_CHECKED_BG}; image: none; }}
+            QToolButton#FormatChip {{
+              border: 1px solid {palette.BORDER_CONTROL};
+              border-radius: {UI.RADIUS_PILL}px;
+              background-color: {palette.BG_CONTROL};
+              padding: 4px 18px;
+              font-weight: 600;
+              color: {palette.TEXT_SECONDARY};
+            }}
+            QToolButton#FormatChip:hover {{ background-color: {palette.BG_CONTROL_HOVER}; border-color: {palette.BORDER_FOCUS}; }}
+            QToolButton#FormatChip:checked {{
+              border: 1px solid {palette.ACCENT};
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.ACCENT_ALT}, stop:1 {palette.ACCENT});
+              color: #FFFFFF;
+            }}
             QComboBox, QSpinBox {{
-              border: 1px solid {UI.BORDER_CONTROL};
+              border: 1px solid {palette.BORDER_CONTROL};
               border-radius: {UI.RADIUS_CONTROL}px;
               min-height: {UI.HEIGHT_CONTROL}px;
               font-size: {UI.FONT_SMALL}px;
-              background-color: {UI.BG_CONTROL};
-              color: {UI.TEXT_PRIMARY};
+              background-color: {palette.BG_CONTROL};
+              color: {palette.TEXT_PRIMARY};
             }}
             QComboBox {{ padding: 2px {UI.SPACE_MD}px; }}
             QSpinBox {{
               padding: 2px {UI.SPACE_SM}px;
               padding-right: 26px;
-              selection-background-color: #2668D5;
+              selection-background-color: {palette.SELECTION_BG};
               min-height: {UI.HEIGHT_CONTROL}px;
               max-height: {UI.HEIGHT_CONTROL}px;
             }}
-            QComboBox:hover {{ border-color: {UI.BORDER_FOCUS}; background-color: #1A2D49; }}
+            QComboBox:hover {{ border-color: {palette.BORDER_FOCUS}; background-color: {palette.CONTROL_HOVER_ALT}; }}
             QSpinBox::up-button {{
               subcontrol-origin: border;
               subcontrol-position: top right;
               width: 20px;
               height: 20px;
               border: none;
-              border-left: 1px solid {UI.BORDER_CONTROL};
-              border-bottom: 1px solid {UI.BORDER_CONTROL};
+              border-left: 1px solid {palette.BORDER_CONTROL};
+              border-bottom: 1px solid {palette.BORDER_CONTROL};
               border-top-right-radius: {UI.RADIUS_CONTROL}px;
-              background: #1A2D49;
+              background: {palette.CONTROL_HOVER_ALT};
             }}
             QSpinBox::down-button {{
               subcontrol-origin: border;
@@ -1220,53 +1571,53 @@ class FreezeFrameWindow(QMainWindow):
               width: 20px;
               height: 20px;
               border: none;
-              border-left: 1px solid {UI.BORDER_CONTROL};
+              border-left: 1px solid {palette.BORDER_CONTROL};
               border-bottom-right-radius: {UI.RADIUS_CONTROL}px;
-              background: #1A2D49;
+              background: {palette.CONTROL_HOVER_ALT};
             }}
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: #22406A; }}
-            QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{ background: #1E3556; }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {palette.SPIN_BUTTON_HOVER}; }}
+            QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{ background: {palette.SPIN_BUTTON_PRESSED}; }}
             QSpinBox::up-arrow {{
-              image: url("{SPIN_UP_ICON}");
+              image: url("{spin_up_icon}");
               width: 8px;
               height: 5px;
             }}
             QSpinBox::down-arrow {{
-              image: url("{SPIN_DOWN_ICON}");
+              image: url("{spin_down_icon}");
               width: 8px;
               height: 5px;
             }}
             QComboBox::drop-down {{ border: none; width: 22px; }}
             QComboBox QAbstractItemView {{
-              background-color: #152744;
-              color: {UI.TEXT_PRIMARY};
-              border: 1px solid #2D476D;
+              background-color: {palette.POPUP_BG};
+              color: {palette.TEXT_PRIMARY};
+              border: 1px solid {palette.POPUP_BORDER};
               border-radius: {UI.RADIUS_CONTROL}px;
               padding: {UI.SPACE_XS}px;
-              selection-background-color: #2668D5;
+              selection-background-color: {palette.SELECTION_BG};
               outline: 0;
             }}
-            QLabel {{ font-size: {UI.FONT_SMALL}px; color: {UI.TEXT_PRIMARY}; }}
+            QLabel {{ font-size: {UI.FONT_SMALL}px; color: {palette.TEXT_PRIMARY}; }}
             QSlider::groove:horizontal {{
-              border: 1px solid {UI.BORDER_CONTROL};
-              height: 4px; border-radius: 2px; background: #111E35;
+              border: 1px solid {palette.BORDER_CONTROL};
+              height: 4px; border-radius: 2px; background: {palette.TRACK_BG};
             }}
             QSlider::sub-page:horizontal {{
               border-radius: 2px;
-              background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {UI.ACCENT_ALT}, stop:1 {UI.ACCENT});
+              background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.ACCENT_ALT}, stop:1 {palette.ACCENT});
             }}
             QSlider::handle:horizontal {{
-              background: {UI.ACCENT};
-              border: 1px solid {UI.BORDER_CONTROL};
+              background: {palette.ACCENT};
+              border: 1px solid {palette.BORDER_CONTROL};
               width: 16px; margin: -6px 0; border-radius: 8px;
             }}
             QProgressBar {{
-              border: 1px solid {UI.BORDER_CONTROL};
-              border-radius: 9px; background-color: #111E35; min-height: 18px;
+              border: 1px solid {palette.BORDER_CONTROL};
+              border-radius: 9px; background-color: {palette.TRACK_BG}; min-height: 18px;
             }}
             QProgressBar::chunk {{
               border-radius: 8px;
-              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {UI.ACCENT_ALT}, stop:1 {UI.ACCENT});
+              background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {palette.ACCENT_ALT}, stop:1 {palette.ACCENT});
             }}
             """
         )
@@ -1293,7 +1644,7 @@ class FreezeFrameWindow(QMainWindow):
         self._set_input_path(selected)
         source = Path(selected)
         self.batch_preview.setText("Generating preview...")
-        self.batch_preview.setPixmap(QPixmap())
+        self.batch_preview.set_source_pixmap(None)
         frame_result = self._resolve_frame_count(source)
         self.current_frame_result = frame_result
         max_frame = max(2, frame_result.frame_count)
@@ -1327,7 +1678,7 @@ class FreezeFrameWindow(QMainWindow):
         self.frame_index_spin.setEnabled(True)
         self.current_frame_result = None
         self.frame_count_info.setText("Frames: batch mode (1-1000)")
-        self.batch_preview.setPixmap(QPixmap())
+        self.batch_preview.set_source_pixmap(None)
         self.batch_preview.setText("Preview not available in batch processing")
         self.status_label.setText("Batch mode: selected frame # is applied to every file in this folder.")
 
@@ -1437,22 +1788,13 @@ class FreezeFrameWindow(QMainWindow):
         label = self._active_preview_label()
         pixmap = QPixmap(image_path)
         if pixmap.isNull():
+            label.set_source_pixmap(None)
             label.setText("Preview unavailable for selected frame")
             return
         if pixmap.height() > 0:
             self.current_preview_aspect = pixmap.width() / pixmap.height()
-            self._update_preview_viewport_size()
-        padding = UI.SPACE_MD
-        target_w = max(1, label.contentsRect().width() - (2 * padding))
-        target_h = max(1, label.contentsRect().height() - (2 * padding))
-        scaled = pixmap.scaled(
-            target_w,
-            target_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        label.setPixmap(scaled)
         label.setText("")
+        label.set_source_pixmap(pixmap)
 
     def _preview_cache_key(self, source: Path, frame_number: int) -> tuple[str, int]:
         return (str(source.resolve()), int(frame_number))
@@ -1849,6 +2191,7 @@ class FreezeFrameWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_preview_viewport_size()
+        QTimer.singleShot(0, self._update_preview_viewport_size)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.preview_worker and self.preview_worker.isRunning():
@@ -1872,6 +2215,8 @@ class FreezeFrameWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    app.setOrganizationName("FreezeFrame")
+    app.setApplicationName("FreezeFrame")
     app_icon_path = resource_path("assets/FreezeFrame_icon_1024.png")
     if app_icon_path.is_file():
         app.setWindowIcon(QIcon(str(app_icon_path)))

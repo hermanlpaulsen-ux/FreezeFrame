@@ -13,8 +13,9 @@ class UI:
 
     # Radii
     RADIUS_CONTROL = 10
-    RADIUS_CARD = 16
+    RADIUS_CARD = 20
     RADIUS_MEDIA = 20
+    RADIUS_PILL = 999
 
     # Heights
     HEIGHT_COMPACT = 32
@@ -33,8 +34,70 @@ class UI:
     FONT_SMALL = 12
     FONT_BUTTON = 13
 
-    # Colors
+
+class LightPalette:
+    BG_APP = "#F4F7FB"
+    BG_APP_GRADIENT_TOP = "#F7F9FD"
+    BG_APP_GRADIENT_BOTTOM = "#E9EEF7"
+    BG_CARD = "#FFFFFF"
+    BG_CONTROL = "#F0F3F8"
+    BG_CONTROL_HOVER = "#E4EAF3"
+    BG_CONTROL_ACTIVE = "#D9E1EE"
+
+    BORDER_SUBTLE = "#E3E8F0"
+    BORDER_CONTROL = "#D3DBE8"
+    BORDER_FOCUS = "#8FB4EA"
+
+    TEXT_PRIMARY = "#1B2434"
+    TEXT_SECONDARY = "#5B6B84"
+    TEXT_MUTED = "#8593A8"
+
+    ACCENT = "#2E6BFF"
+    ACCENT_HOVER = "#1E5AEB"
+    ACCENT_ALT = "#0FBBA0"
+    SUCCESS = "#12A150"
+    SUCCESS_HOVER = "#0E8A44"
+    SUCCESS_PRESSED = "#0B7339"
+
+    ACCENT_GRADIENT_HOVER_START = "#22C9AE"
+    ACCENT_GRADIENT_PRESSED_START = "#0FA88F"
+    ACCENT_GRADIENT_PRESSED_END = "#1A4FCC"
+
+    DISABLED_BG = "#EEF1F6"
+
+    HEADER_ICON_BG = "#E9F1FF"
+    HEADER_ICON_FG = "#1D6FE0"
+
+    CHECKBOX_BORDER = "#C3CEDE"
+    CHECKBOX_BG = "#FFFFFF"
+    CHECKBOX_CHECKED_BORDER = "#0FBBA0"
+    CHECKBOX_CHECKED_BG = "#14C7AC"
+
+    SELECTION_BG = "#2E6BFF"
+
+    CONTROL_HOVER_ALT = "#E4EAF3"
+    SPIN_BUTTON_HOVER = "#D9E1EE"
+    SPIN_BUTTON_PRESSED = "#CBD6E8"
+
+    POPUP_BG = "#FFFFFF"
+    POPUP_BORDER = "#D3DBE8"
+
+    TRACK_BG = "#E3E8F0"
+
+    BADGE_BLUE_BG = "#E3EDFF"
+    BADGE_BLUE_FG = "#2E6BFF"
+    BADGE_VIOLET_BG = "#F1E9FE"
+    BADGE_VIOLET_FG = "#8B5CF6"
+    BADGE_TEAL_BG = "#DFF9F1"
+    BADGE_TEAL_FG = "#0FBBA0"
+    BADGE_AMBER_BG = "#FFF1DB"
+    BADGE_AMBER_FG = "#EA8C00"
+
+
+class DarkPalette:
     BG_APP = "#143247"
+    BG_APP_GRADIENT_TOP = "#16324A"
+    BG_APP_GRADIENT_BOTTOM = "#0C1B2C"
     BG_CARD = "#0E1624"
     BG_CONTROL = "#122039"
     BG_CONTROL_HOVER = "#1B3352"
@@ -52,3 +115,60 @@ class UI:
     ACCENT_HOVER = "#3D8AFF"
     ACCENT_ALT = "#1FD0B2"
     SUCCESS = "#16A34A"
+    SUCCESS_HOVER = "#27D491"
+    SUCCESS_PRESSED = "#16A34A"
+
+    ACCENT_GRADIENT_HOVER_START = "#2ADDC0"
+    ACCENT_GRADIENT_PRESSED_START = "#16B99D"
+    ACCENT_GRADIENT_PRESSED_END = "#2367D8"
+
+    DISABLED_BG = "#1A2436"
+
+    HEADER_ICON_BG = "#0A2038"
+    HEADER_ICON_FG = "#1EC8FF"
+
+    CHECKBOX_BORDER = "#3C5E8D"
+    CHECKBOX_BG = "#10203A"
+    CHECKBOX_CHECKED_BORDER = "#22C9B3"
+    CHECKBOX_CHECKED_BG = "#1AC7AE"
+
+    SELECTION_BG = "#2668D5"
+
+    CONTROL_HOVER_ALT = "#1A2D49"
+    SPIN_BUTTON_HOVER = "#22406A"
+    SPIN_BUTTON_PRESSED = "#1E3556"
+
+    POPUP_BG = "#152744"
+    POPUP_BORDER = "#2D476D"
+
+    TRACK_BG = "#111E35"
+
+    BADGE_BLUE_BG = "#183157"
+    BADGE_BLUE_FG = "#5C9BFF"
+    BADGE_VIOLET_BG = "#2B2352"
+    BADGE_VIOLET_FG = "#B39DFF"
+    BADGE_TEAL_BG = "#11322D"
+    BADGE_TEAL_FG = "#3EE0C4"
+    BADGE_AMBER_BG = "#3A2A10"
+    BADGE_AMBER_FG = "#FFB94D"
+
+
+class Theme:
+    LIGHT = "light"
+    DARK = "dark"
+
+
+_current_theme = Theme.LIGHT
+
+
+def get_palette():
+    return LightPalette if _current_theme == Theme.LIGHT else DarkPalette
+
+
+def set_theme(theme: str) -> None:
+    global _current_theme
+    _current_theme = theme if theme in (Theme.LIGHT, Theme.DARK) else Theme.LIGHT
+
+
+def current_theme() -> str:
+    return _current_theme

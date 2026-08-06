@@ -9,5 +9,8 @@ def resource_path(relative_path: str) -> Path:
     return base_dir / relative_path
 
 
-SPIN_UP_ICON = resource_path("assets/spin-up.svg").as_posix()
-SPIN_DOWN_ICON = resource_path("assets/spin-down.svg").as_posix()
+def spin_icon_paths(theme: str) -> tuple[str, str]:
+    suffix = "dark" if theme == "dark" else "light"
+    up = resource_path(f"assets/spin-up-{suffix}.svg").as_posix()
+    down = resource_path(f"assets/spin-down-{suffix}.svg").as_posix()
+    return up, down

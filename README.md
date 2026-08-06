@@ -9,6 +9,7 @@ Desktop app for extracting the first frame from video files and saving them as i
 ## Features
 
 - Native macOS app window (no Terminal window required)
+- Custom frameless window chrome with light/dark theme toggle (persisted across launches)
 - Input and output folder pickers
 - Default output suggestion: `InputFolder/Stills`
 - Multi-format output: `JPEG`, `PNG`, `TIFF`
